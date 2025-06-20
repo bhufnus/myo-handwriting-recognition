@@ -63,6 +63,6 @@ def load_trained_model():
     return model, le
 
 if __name__ == "__main__":
-    pass
-    # app = TrainApp(labels=['A', 'B', 'C'], samples_per_class=10, duration_ms=2000)
-    # app.run()
+    app = UnifiedApp(labels=['A', 'B', 'C'], samples_per_class=10, duration_ms=2000)
+    app.current_label = tk.StringVar(value=app.labels[0])
+    app.mainloop()
