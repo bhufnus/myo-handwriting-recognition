@@ -30,3 +30,32 @@ def extract_features(emg_window):
     rms = np.sqrt(np.mean(emg_window**2, axis=0))
     mav = np.mean(np.abs(emg_window), axis=0)
     return np.concatenate([rms, mav])
+
+def extract_accel_features(accel_window):
+    """Extract mean, std, min, max from accelerometer window."""
+    if len(accel_window) == 0:
+        return np.zeros(12)
+    accel_window = np.array(accel_window)
+    mean = np.mean(accel_window, axis=0)
+    std = np.std(accel_window, axis=0)
+    min_ = np.min(accel_window, axis=0)
+    max_ = np.max(accel_window, axis=0)
+    return np.concatenate([mean, std, min_, max_])
+
+def extract_gyro_features(gyro_window):
+    """Extract mean, std, min, max from gyroscope window."""
+    if len(gyro_window) == 0:
+        return np.zeros(12)
+    gyro_window = np.array(gyro_window)
+    mean = np.mean(gyro_window, axis=0)
+    std = np.std(gyro_window, axis=0)
+    min_ = np.min(gyro_window, axis=0)
+    max_ = np.max(gyro_window, axis=0)
+    return np.concatenate([mean, std, min_, max_])
+
+def extract_all_features(emg_window, accel_window, gyro_window):
+    """Extract and concatenate features from EMG, accelerometer, and gyroscope windows."""
+    emg_feat = extract_features(emg_window)
+    accel_feat = extract_accel_features(accel_window)
+    gyro_feat = extract_gyro_features(gyro_window)
+    return np.concatenate([emg_feat, accel_feat, gyro_feat])

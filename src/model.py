@@ -7,6 +7,10 @@ from tensorflow.keras.layers import Dense, Conv1D, Dropout, Flatten, Input
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from .utils import get_output_dir
+import myo
+from src.utils import get_sdk_path
+
+myo.init(sdk_path=get_sdk_path())
 
 def train_model(X, y, labels):
     """Train and save a handwriting recognition model."""
@@ -57,3 +61,8 @@ def load_trained_model():
         raise RuntimeError(f"Error loading labels: {e}")
     
     return model, le
+
+if __name__ == "__main__":
+    pass
+    # app = TrainApp(labels=['A', 'B', 'C'], samples_per_class=10, duration_ms=2000)
+    # app.run()
