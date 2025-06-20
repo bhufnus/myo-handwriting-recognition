@@ -1,0 +1,9 @@
+# .gitignore
+notebooks/
+data/
+*.npy
+*.keras
+__pycache__/
+*.pyc
+.env
+.vscode/

@@ -1,0 +1,6 @@
+# requirements.txt
+numpy
+scipy
+tensorflow[and-cuda]
+scikit-learn
+matplotlib
