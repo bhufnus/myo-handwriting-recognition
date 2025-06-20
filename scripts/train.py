@@ -7,6 +7,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from src.myo_interface import init_myo, collect_data
 from src.model import train_model
+import myo
 
 def main():
     init_myo()
@@ -14,7 +15,7 @@ def main():
     all_emg, all_labels = [], []
     
     for label in labels:
-        for attempt in range(1, 4):
+        for attempt in range(1, 2):
             print(f"\n=== Collection {attempt}/3 for {label} ===")
             emg, lbl = collect_data(label)
             if len(emg) > 0:
@@ -30,6 +31,9 @@ def main():
     if all_emg:
         X = np.array(all_emg)
         model, le = train_model(X, all_labels, all_labels)
+        print("Label mapping:", le.classes_)
+        probs = pred[0]
+        print(f"Probabilities: {probs}, Predicted: {text}")
     else:
         print("No data to train model. Exiting.")
 

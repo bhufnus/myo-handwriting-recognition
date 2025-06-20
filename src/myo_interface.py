@@ -22,6 +22,8 @@ class EmgListener(myo.DeviceListener):
     def __init__(self, duration=2.0):
         self.duration = duration
         self.emg_data = []
+        self.accel_data = []
+        self.gyro_data = []
         self.start_time = None
         self.connected = False
 
@@ -40,14 +42,23 @@ class EmgListener(myo.DeviceListener):
         if len(event.emg) == 8:
             self.emg_data.append(event.emg)
 
+    def on_imu(self, event):
+        # Collect accelerometer and gyroscope data
+        accel = [event.accelerometer.x, event.accelerometer.y, event.accelerometer.z]
+        gyro = [event.gyroscope.x, event.gyroscope.y, event.gyroscope.z]
+        self.accel_data.append(accel)
+        self.gyro_data.append(gyro)
+
 def init_myo():
     """Initialize Myo SDK - now handled at module level."""
     print("Myo SDK already initialized at module level")
     return True
 
 def collect_data(label, duration_ms=2000):
-    """Collect EMG data for a given label."""
+    """Collect EMG, accelerometer, and gyroscope data for a given label."""
     emg_data = []
+    accel_data = []
+    gyro_data = []
     listener = EmgListener(duration=duration_ms/1000)
     hub = myo.Hub()
     
@@ -81,11 +92,19 @@ def collect_data(label, duration_ms=2000):
             print("   Make sure the armband is paired and worn properly")
         
         emg_data = np.array(listener.emg_data)
-        print(f"Collected {len(emg_data)} EMG samples")
+        accel_data = np.array(listener.accel_data)
+        gyro_data = np.array(listener.gyro_data)
+        print(f"Collected {len(emg_data)} EMG, {len(accel_data)} accel, {len(gyro_data)} gyro samples")
+        
+        # Beep after test finishes
+        try:
+            winsound.Beep(1200, 300)  # 1200 Hz, 300 ms for finish
+        except Exception as e:
+            print(f"Finish beep failed: {e}")
         
     except Exception as e:
         print(f"Error during data collection: {e}")
     finally:
         hub.stop()
         
-    return emg_data, [label] * len(emg_data)
+    return emg_data, accel_data, gyro_data, [label] * len(emg_data)

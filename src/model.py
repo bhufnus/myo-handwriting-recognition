@@ -1,5 +1,6 @@
 # Model training and loading
 # src/model.py
+import os
 import numpy as np
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Dense, Conv1D, Dropout, Flatten, Input
