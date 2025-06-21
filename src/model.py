@@ -7,8 +7,8 @@ import json
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, Flatten
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, Flatten, Input
 from .utils import get_output_dir
 
 def train_model(X, y, labels):
