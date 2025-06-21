@@ -1,16 +1,15 @@
 # Model training and loading
 # src/model.py
-import os
 import numpy as np
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Dense, Conv1D, Dropout, Flatten, Input
-from sklearn.model_selection import train_test_split
+import os
+import pickle
+import json
 from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, Flatten
 from .utils import get_output_dir
-import myo
-from src.utils import get_sdk_path
-
-myo.init(sdk_path=get_sdk_path())
 
 def train_model(X, y, labels):
     """Train and save a handwriting recognition model."""

@@ -1,4 +1,4 @@
-# EMG preprocessing and feature extraction
+# EMG and Quaternion preprocessing and feature extraction
 # src/preprocessing.py
 import numpy as np
 from scipy.signal import butter, filtfilt
@@ -23,7 +23,7 @@ def preprocess_emg(emg_data, fs=200, lowcut=20, highcut=90):
     normalized = (filtered - np.mean(filtered)) / np.std(filtered)
     return normalized
 
-def extract_features(emg_window):
+def extract_emg_features(emg_window):
     """Extract RMS and MAV features from EMG window."""
     if len(emg_window) == 0:
         return np.zeros(16)
@@ -31,31 +31,19 @@ def extract_features(emg_window):
     mav = np.mean(np.abs(emg_window), axis=0)
     return np.concatenate([rms, mav])
 
-def extract_accel_features(accel_window):
-    """Extract mean, std, min, max from accelerometer window."""
-    if len(accel_window) == 0:
-        return np.zeros(12)
-    accel_window = np.array(accel_window)
-    mean = np.mean(accel_window, axis=0)
-    std = np.std(accel_window, axis=0)
-    min_ = np.min(accel_window, axis=0)
-    max_ = np.max(accel_window, axis=0)
+def extract_quaternion_features(quaternion_window):
+    """Extract features from quaternion window."""
+    if len(quaternion_window) == 0:
+        return np.zeros(16)
+    quaternion_window = np.array(quaternion_window)
+    mean = np.mean(quaternion_window, axis=0)
+    std = np.std(quaternion_window, axis=0)
+    min_ = np.min(quaternion_window, axis=0)
+    max_ = np.max(quaternion_window, axis=0)
     return np.concatenate([mean, std, min_, max_])
 
-def extract_gyro_features(gyro_window):
-    """Extract mean, std, min, max from gyroscope window."""
-    if len(gyro_window) == 0:
-        return np.zeros(12)
-    gyro_window = np.array(gyro_window)
-    mean = np.mean(gyro_window, axis=0)
-    std = np.std(gyro_window, axis=0)
-    min_ = np.min(gyro_window, axis=0)
-    max_ = np.max(gyro_window, axis=0)
-    return np.concatenate([mean, std, min_, max_])
-
-def extract_all_features(emg_window, accel_window, gyro_window):
-    """Extract and concatenate features from EMG, accelerometer, and gyroscope windows."""
-    emg_feat = extract_features(emg_window)
-    accel_feat = extract_accel_features(accel_window)
-    gyro_feat = extract_gyro_features(gyro_window)
-    return np.concatenate([emg_feat, accel_feat, gyro_feat])
+def extract_all_features(emg_window, quaternion_window):
+    """Extract and concatenate features from EMG and quaternion windows."""
+    emg_feat = extract_emg_features(emg_window)
+    quaternion_feat = extract_quaternion_features(quaternion_window)
+    return np.concatenate([emg_feat, quaternion_feat])

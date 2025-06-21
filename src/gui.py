@@ -1,22 +1,22 @@
 # Tkinter GUI for live prediction
 # src/gui.py
 import tkinter as tk
-import tkinter.ttk as ttk
-import time
-import myo
-from .preprocessing import preprocess_emg, extract_features, extract_all_features
-import numpy as np
-import threading
-from .utils import get_sdk_path
-import matplotlib
-matplotlib.use('TkAgg')
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from tkinter import ttk, messagebox, filedialog, scrolledtext
 import matplotlib.pyplot as plt
-import tkinter.scrolledtext as scrolledtext
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import numpy as np
+import myo
+import threading
+import time
 import os
-from src.model import train_model
+import pickle
+import json
+from .preprocessing import preprocess_emg, extract_emg_features, extract_all_features
+from .model import train_model
 
-myo.init(sdk_path=get_sdk_path())
+# Use the same SDK path as the working test_myo_imu.py
+sdk_path = r"C:\Users\brian\__CODING__\MyoArmband\myo-handwriting-recognition\myo-sdk-win-0.9.0"
+myo.init(sdk_path=sdk_path)
 
 class App(tk.Tk, myo.DeviceListener):
     def __init__(self, model, le):
@@ -31,9 +31,11 @@ class App(tk.Tk, myo.DeviceListener):
         self.last_label.pack(pady=5)
         self.model = model
         self.le = le
+        # Data buffers - only EMG and quaternions
         self.emg_buffer = []
-        self.accel_buffer = []
-        self.gyro_buffer = []
+        self.quaternion_buffer = []  # Raw quaternions from orientation
+        self.last_emg_time = 0
+        self.last_quaternion_time = 0
         self.hub = myo.Hub()
         self.last_pred = None
         self.last_print_time = 0
@@ -63,27 +65,21 @@ class App(tk.Tk, myo.DeviceListener):
         if len(event.emg) == 8 and self.collecting:
             self.emg_buffer.append(event.emg)
 
-    def on_imu(self, event):
+    def on_orientation(self, event):
         now = time.time()
-        if now - self.last_imu_time < 0.05:
+        if now - self.last_quaternion_time < 0.05:
             return
-        self.last_imu_time = now
-        print("on_imu called")
+        self.last_quaternion_time = now
+        print("on_orientation called")
         if self.collecting:
-            accel = [event.accelerometer.x, event.accelerometer.y, event.accelerometer.z]
-            self.accel_buffer.append(accel)
-            self.log(f"on_imu: accel={accel}")
+            # Extract quaternion data (x, y, z, w)
+            quaternion = [event.orientation.x, event.orientation.y, event.orientation.z, event.orientation.w]
+            self.quaternion_buffer.append(quaternion)
+            self.log(f"on_orientation: quaternion={quaternion}")
 
-    def on_imu_data(self, event):
-        now = time.time()
-        if now - self.last_imu_time < 0.05:
-            return
-        self.last_imu_time = now
-        print("on_imu_data called")
-        if self.collecting:
-            accel = [event.accelerometer.x, event.accelerometer.y, event.accelerometer.z]
-            self.accel_buffer.append(accel)
-            self.log(f"on_imu_data: accel={accel}")
+    def on_imu(self, event):
+        # Keep this as a fallback, but quaternions should come through on_orientation
+        print("on_imu called - but quaternions should use on_orientation callback")
 
     def on_event(self, event):
         print(f"Event type: {type(event)}")
@@ -105,15 +101,14 @@ class App(tk.Tk, myo.DeviceListener):
             self.after(20, self.update_progress)
 
     def make_prediction(self):
-        min_len = min(len(self.emg_buffer), len(self.accel_buffer), len(self.gyro_buffer))
+        min_len = min(len(self.emg_buffer), len(self.quaternion_buffer))
         window_size = 100
         if min_len >= window_size:
             try:
                 emg_win = np.array(self.emg_buffer[:window_size])
-                accel_win = np.array(self.accel_buffer[:window_size])
-                gyro_win = np.array(self.gyro_buffer[:window_size])
+                quaternion_win = np.array(self.quaternion_buffer[:window_size])
                 emg_proc = preprocess_emg(emg_win)
-                features = extract_all_features(emg_proc, accel_win, gyro_win)
+                features = extract_all_features(emg_proc, quaternion_win)
                 pred = self.model.predict(features.reshape(1, -1, 1), verbose=0)
                 text = self.le.inverse_transform([np.argmax(pred)])[0]
                 self.label.config(text=f"Predicted Text: {text}")
@@ -127,8 +122,7 @@ class App(tk.Tk, myo.DeviceListener):
         else:
             self.label.config(text="Not enough data for prediction.")
         self.emg_buffer = []
-        self.accel_buffer = []
-        self.gyro_buffer = []
+        self.quaternion_buffer = []
 
     def run(self):
         try:
@@ -150,13 +144,12 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         self.status = tk.StringVar(value="Idle")
         self.countdown = tk.StringVar(value="")
         self.progress = tk.IntVar(value=0)
-        self.collected = {label: 0 for label in labels}
+        # Initialize data storage
         self.data = {label: [] for label in labels}
-        self.accel_data = {label: [] for label in labels}
-        self.gyro_data = {label: [] for label in labels}
-        self.hub = myo.Hub()
-        self.collecting = False
+        self.quaternion_data = {label: [] for label in labels}  # Only EMG and quaternion data
+        self.collected = {label: 0 for label in labels}
         self.emg_buffer = []
+        self.quaternion_buffer = []
         self.accel_buffer = []
         self.gyro_buffer = []
         self.last_imu_time = 0  # For interval check
@@ -215,9 +208,9 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         self.emg_lines = [self.axs[0].plot([], [], label=f'EMG {i+1}')[0] for i in range(8)]
         self.axs[0].set_ylabel('EMG')
         self.axs[0].legend(loc='upper right', fontsize=6)
-        # Accel: 3 axes
-        self.accel_lines = [self.axs[1].plot([], [], label=axis)[0] for axis in ['X', 'Y', 'Z']]
-        self.axs[1].set_ylabel('Accel')
+        # Quaternion: 4 components (x, y, z, w)
+        self.quaternion_lines = [self.axs[1].plot([], [], label=comp)[0] for comp in ['X', 'Y', 'Z', 'W']]
+        self.axs[1].set_ylabel('Quaternion')
         self.axs[1].legend(loc='upper right', fontsize=6)
         self.axs[1].set_xlabel('Samples')
         self.fig.tight_layout(pad=2.0)
@@ -233,18 +226,18 @@ class TrainApp(tk.Tk, myo.DeviceListener):
             self.axs[0].set_ylim(np.min(emg_arr)-5, np.max(emg_arr)+5)
         else:
             self.axs[0].set_ylim(-1, 1)
-        # Accel
-        if len(self.accel_buffer) >= window:
-            accel_arr = np.array(self.accel_buffer[-window:])
-        elif len(self.accel_buffer) > 0:
-            accel_arr = np.pad(np.array(self.accel_buffer), ((window-len(self.accel_buffer),0),(0,0)), 'constant')
+        # Quaternion (x, y, z, w)
+        if len(self.quaternion_buffer) >= window:
+            quaternion_arr = np.array(self.quaternion_buffer[-window:])
+        elif len(self.quaternion_buffer) > 0:
+            quaternion_arr = np.pad(np.array(self.quaternion_buffer), ((window-len(self.quaternion_buffer),0),(0,0)), 'constant')
         else:
-            accel_arr = np.zeros((window, 3))
-        for i, line in enumerate(self.accel_lines):
-            line.set_data(np.arange(len(accel_arr)), accel_arr[:, i] if accel_arr.shape[0] else np.zeros(window))
+            quaternion_arr = np.zeros((window, 4))
+        for i, line in enumerate(self.quaternion_lines):
+            line.set_data(np.arange(len(quaternion_arr)), quaternion_arr[:, i] if quaternion_arr.shape[0] else np.zeros(window))
         self.axs[1].set_xlim(0, window)
-        if accel_arr.size:
-            self.axs[1].set_ylim(np.min(accel_arr)-1, np.max(accel_arr)+1)
+        if quaternion_arr.size:
+            self.axs[1].set_ylim(np.min(quaternion_arr)-1, np.max(quaternion_arr)+1)
         else:
             self.axs[1].set_ylim(-1, 1)
         self.canvas.draw()
@@ -260,15 +253,16 @@ class TrainApp(tk.Tk, myo.DeviceListener):
             self.status.set("Connecting to Myo...")
             self._set_led("gray")
             if not hasattr(self, 'hub_thread') or not self.hub_thread.is_alive():
-                self.hub = myo.Hub()
                 self.hub_thread = threading.Thread(target=self._run_hub, daemon=True)
                 self.hub_thread.start()
         else:
             self.status.set("Disconnected (manual)")
             self._set_led("gray")
             try:
-                if hasattr(self, 'hub') and self.hub:
-                    self.hub.stop()
+                # The hub will be cleaned up when the thread ends
+                if hasattr(self, 'hub_thread') and self.hub_thread.is_alive():
+                    # We can't directly stop the hub from here, but the thread will end when the app closes
+                    pass
             except Exception as e:
                 print(f"Error stopping hub: {e}")
             self.collecting = False
@@ -287,16 +281,21 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         if self.collecting:
             self.emg_buffer.append(event.emg)
 
-    def on_imu(self, event):
+    def on_orientation(self, event):
         now = time.time()
         if now - self.last_imu_time < 0.05:
             return
         self.last_imu_time = now
-        print("on_imu called")
+        print("on_orientation called")
         if self.collecting:
-            accel = [event.accelerometer.x, event.accelerometer.y, event.accelerometer.z]
-            self.accel_buffer.append(accel)
-            self.log(f"on_imu: accel={accel}")
+            # Extract orientation data (quaternions)
+            orientation = [event.orientation.x, event.orientation.y, event.orientation.z, event.orientation.w]
+            self.quaternion_buffer.append(orientation) # Store raw quaternion in quaternion_buffer
+            self.log(f"on_orientation: orientation={orientation}")
+
+    def on_imu(self, event):
+        # Keep this as a fallback, but orientation should come through on_orientation
+        print("on_imu called - but orientation should use on_orientation callback")
 
     def on_imu_data(self, event):
         now = time.time()
@@ -336,7 +335,7 @@ class TrainApp(tk.Tk, myo.DeviceListener):
             self.collecting = True
             self.emg_buffer = []
             self.accel_buffer = []
-            self.gyro_buffer = []
+            self.quaternion_buffer = [] # Reset quaternion buffer
             self.after(self.duration_ms, lambda: self._finish_collection(label))
 
     def _finish_collection(self, label):
@@ -345,7 +344,7 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         if len(self.emg_buffer) > 0:
             self.data[label].append(np.array(self.emg_buffer))
             self.accel_data[label].append(np.array(self.accel_buffer))
-            self.gyro_data[label].append(np.array(self.gyro_buffer))
+            self.quaternion_data[label].append(np.array(self.quaternion_buffer)) # Store quaternion data
             self.collected[label] += 1
             self.status.set(f"Sample {self.collected[label]}/{self.samples_per_class} for {label} collected!")
             # Log summary of accel data
@@ -367,6 +366,7 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         if self.data[label]:
             emg_arr = self.data[label][-1]
             accel_arr = self.accel_data[label][-1] if self.accel_data[label] else np.zeros((len(emg_arr), 3))
+            quaternion_arr = self.quaternion_data[label][-1] if self.quaternion_data[label] else np.zeros((len(emg_arr), 4))
             window = min(200, len(emg_arr))
             # EMG
             for i, line in enumerate(self.emg_lines):
@@ -384,6 +384,10 @@ class TrainApp(tk.Tk, myo.DeviceListener):
                 self.axs[1].set_ylim(np.min(accel_arr)-1, np.max(accel_arr)+1)
             else:
                 self.axs[1].set_ylim(-1, 1)
+            # Quaternion (x, y, z, w)
+            for i, line in enumerate(self.quaternion_lines):
+                line.set_data(np.arange(window), quaternion_arr[-window:, i] if quaternion_arr.shape[0] else np.zeros(window))
+            self.axs[1].set_ylim(np.min(quaternion_arr)-1, np.max(quaternion_arr)+1)
             self.canvas.draw()
 
     def log(self, msg):
@@ -402,10 +406,13 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         for label in self.labels:
             emg_arrs = self.data[label]
             accel_arrs = self.accel_data[label]
+            quaternion_arrs = self.quaternion_data[label] # Load quaternion data
             if emg_arrs:
                 save_dict[f'{label}_emg'] = np.array(emg_arrs, dtype=object)
             if accel_arrs:
                 save_dict[f'{label}_accel'] = np.array(accel_arrs, dtype=object)
+            if quaternion_arrs:
+                save_dict[f'{label}_quaternion'] = np.array(quaternion_arrs, dtype=object) # Save quaternion data
         np.savez(save_path, **save_dict)
         self.log(f"Saved all data to {save_path}")
         # Start training in a background thread
@@ -419,6 +426,7 @@ class TrainApp(tk.Tk, myo.DeviceListener):
             for label in self.labels:
                 emg_arrs = data.get(f'{label}_emg', None)
                 accel_arrs = data.get(f'{label}_accel', None)
+                quaternion_arrs = data.get(f'{label}_quaternion', None) # Load quaternion data
                 if emg_arrs is not None and accel_arrs is not None:
                     for emg, accel in zip(emg_arrs, accel_arrs):
                         min_len = min(len(emg), len(accel))
@@ -426,14 +434,27 @@ class TrainApp(tk.Tk, myo.DeviceListener):
                         for i in range(0, min_len - window_size, window_size):
                             emg_win = emg[i:i+window_size]
                             accel_win = accel[i:i+window_size]
+                            quaternion_win = quaternion_arrs[i:i+window_size] if quaternion_arrs is not None else np.zeros((window_size, 4))
                             emg_proc = preprocess_emg(emg_win)
-                            features = extract_all_features(emg_proc, accel_win, np.zeros_like(accel_win))
+                            features = extract_all_features(emg_proc, accel_win, quaternion_win)
                             all_features.append(features)
                             all_labels.append(label)
             if all_features:
                 X = np.array(all_features)
                 model, le = train_model(X, all_labels, all_labels)
-                self.log("Model training complete! Model saved.")
+                
+                # Save the model and label encoder for prediction
+                save_dir = os.path.join(os.path.expanduser('~'), 'MyoData')
+                os.makedirs(save_dir, exist_ok=True)
+                model_path = os.path.join(save_dir, 'trained_model.h5')
+                le_path = os.path.join(save_dir, 'label_encoder.pkl')
+                
+                model.save(model_path)
+                import pickle
+                with open(le_path, 'wb') as f:
+                    pickle.dump(le, f)
+                
+                self.log("Model training complete! Model and label encoder saved.")
             else:
                 self.log("No data to train model. Training skipped.")
         except Exception as e:
@@ -458,11 +479,12 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         self.status = tk.StringVar(value="Idle")
         self.countdown = tk.StringVar(value="")
         self.progress = tk.IntVar(value=0)
-        self.collected = {label: 0 for label in labels}
+        # Initialize data storage
         self.data = {label: [] for label in labels}
-        self.accel_data = {label: [] for label in labels}
-        self.gyro_data = {label: [] for label in labels}
+        self.quaternion_data = {label: [] for label in labels}  # Only EMG and quaternion data
+        self.collected = {label: 0 for label in labels}
         self.emg_buffer = []
+        self.quaternion_buffer = []
         self.accel_buffer = []
         self.gyro_buffer = []
         self.last_imu_time = 0
@@ -470,10 +492,10 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         self.collecting = False
         self.predicting = False
         self._build_ui()
-        self.hub = myo.Hub()
-        self.hub_thread = threading.Thread(target=self._run_hub, daemon=True)
-        self.hub_thread.start()
-        # self.toggle_connect()  # Start connected (removed, not defined in UnifiedApp)
+        # Don't create hub here - let toggle_connect handle it
+        # self.hub = myo.Hub()
+        # self.hub_thread = threading.Thread(target=self._run_hub, daemon=True)
+        # self.hub_thread.start()
 
     def _build_ui(self):
         # Mode switch
@@ -550,9 +572,9 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         self.emg_lines = [self.axs[0].plot([], [], label=f'EMG {i+1}')[0] for i in range(8)]
         self.axs[0].set_ylabel('EMG')
         self.axs[0].legend(loc='upper right', fontsize=6)
-        # Accel: 3 axes
-        self.accel_lines = [self.axs[1].plot([], [], label=axis)[0] for axis in ['X', 'Y', 'Z']]
-        self.axs[1].set_ylabel('Accel')
+        # Quaternion: 4 components (x, y, z, w)
+        self.quaternion_lines = [self.axs[1].plot([], [], label=comp)[0] for comp in ['X', 'Y', 'Z', 'W']]
+        self.axs[1].set_ylabel('Quaternion')
         self.axs[1].legend(loc='upper right', fontsize=6)
         self.axs[1].set_xlabel('Samples')
         self.fig.tight_layout(pad=2.0)
@@ -568,18 +590,18 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
             self.axs[0].set_ylim(np.min(emg_arr)-5, np.max(emg_arr)+5)
         else:
             self.axs[0].set_ylim(-1, 1)
-        # Accel
-        if len(self.accel_buffer) >= window:
-            accel_arr = np.array(self.accel_buffer[-window:])
-        elif len(self.accel_buffer) > 0:
-            accel_arr = np.pad(np.array(self.accel_buffer), ((window-len(self.accel_buffer),0),(0,0)), 'constant')
+        # Quaternion (x, y, z, w)
+        if len(self.quaternion_buffer) >= window:
+            quaternion_arr = np.array(self.quaternion_buffer[-window:])
+        elif len(self.quaternion_buffer) > 0:
+            quaternion_arr = np.pad(np.array(self.quaternion_buffer), ((window-len(self.quaternion_buffer),0),(0,0)), 'constant')
         else:
-            accel_arr = np.zeros((window, 3))
-        for i, line in enumerate(self.accel_lines):
-            line.set_data(np.arange(len(accel_arr)), accel_arr[:, i] if accel_arr.shape[0] else np.zeros(window))
+            quaternion_arr = np.zeros((window, 4))
+        for i, line in enumerate(self.quaternion_lines):
+            line.set_data(np.arange(len(quaternion_arr)), quaternion_arr[:, i] if quaternion_arr.shape[0] else np.zeros(window))
         self.axs[1].set_xlim(0, window)
-        if accel_arr.size:
-            self.axs[1].set_ylim(np.min(accel_arr)-1, np.max(accel_arr)+1)
+        if quaternion_arr.size:
+            self.axs[1].set_ylim(np.min(quaternion_arr)-1, np.max(quaternion_arr)+1)
         else:
             self.axs[1].set_ylim(-1, 1)
         self.canvas.draw()
@@ -588,22 +610,25 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         self.led_canvas.itemconfig(self.led, fill=color)
 
     def _run_hub(self):
-        self.hub.run_forever(self)
+        # Create hub inside the thread like the working test_myo_imu.py
+        hub = myo.Hub()
+        hub.run_forever(self)
 
     def toggle_connect(self):
         if self.connect_var.get():
             self.status.set("Connecting to Myo...")
             self._set_led("gray")
             if not hasattr(self, 'hub_thread') or not self.hub_thread.is_alive():
-                self.hub = myo.Hub()
                 self.hub_thread = threading.Thread(target=self._run_hub, daemon=True)
                 self.hub_thread.start()
         else:
             self.status.set("Disconnected (manual)")
             self._set_led("gray")
             try:
-                if hasattr(self, 'hub') and self.hub:
-                    self.hub.stop()
+                # The hub will be cleaned up when the thread ends
+                if hasattr(self, 'hub_thread') and self.hub_thread.is_alive():
+                    # We can't directly stop the hub from here, but the thread will end when the app closes
+                    pass
             except Exception as e:
                 print(f"Error stopping hub: {e}")
             self.collecting = False
@@ -629,9 +654,10 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         self.last_imu_time = now
         print("on_imu called")
         if self.collecting:
-            accel = [event.accelerometer.x, event.accelerometer.y, event.accelerometer.z]
-            self.accel_buffer.append(accel)
-            self.log(f"on_imu: accel={accel}")
+            # Use orientation data (quaternions) instead of raw IMU
+            orientation = [event.orientation.x, event.orientation.y, event.orientation.z, event.orientation.w]
+            self.quaternion_buffer.append(orientation) # Store raw quaternion in quaternion_buffer
+            self.log(f"on_imu: orientation={orientation}")
 
     def on_imu_data(self, event):
         now = time.time()
@@ -671,7 +697,7 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
             self.collecting = True
             self.emg_buffer = []
             self.accel_buffer = []
-            self.gyro_buffer = []
+            self.quaternion_buffer = [] # Reset quaternion buffer
             self.after(self.duration_ms, lambda: self._finish_collection(label))
 
     def _finish_collection(self, label):
@@ -680,7 +706,7 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         if len(self.emg_buffer) > 0:
             self.data[label].append(np.array(self.emg_buffer))
             self.accel_data[label].append(np.array(self.accel_buffer))
-            self.gyro_data[label].append(np.array(self.gyro_buffer))
+            self.quaternion_data[label].append(np.array(self.quaternion_buffer)) # Store quaternion data
             self.collected[label] += 1
             self.status.set(f"Sample {self.collected[label]}/{self.samples_per_class} for {label} collected!")
             # Log summary of accel data
@@ -702,6 +728,7 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         if self.data[label]:
             emg_arr = self.data[label][-1]
             accel_arr = self.accel_data[label][-1] if self.accel_data[label] else np.zeros((len(emg_arr), 3))
+            quaternion_arr = self.quaternion_data[label][-1] if self.quaternion_data[label] else np.zeros((len(emg_arr), 4))
             window = min(200, len(emg_arr))
             # EMG
             for i, line in enumerate(self.emg_lines):
@@ -719,6 +746,10 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
                 self.axs[1].set_ylim(np.min(accel_arr)-1, np.max(accel_arr)+1)
             else:
                 self.axs[1].set_ylim(-1, 1)
+            # Quaternion (x, y, z, w)
+            for i, line in enumerate(self.quaternion_lines):
+                line.set_data(np.arange(window), quaternion_arr[-window:, i] if quaternion_arr.shape[0] else np.zeros(window))
+            self.axs[1].set_ylim(np.min(quaternion_arr)-1, np.max(quaternion_arr)+1)
             self.canvas.draw()
 
     def log(self, msg):
@@ -737,10 +768,13 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         for label in self.labels:
             emg_arrs = self.data[label]
             accel_arrs = self.accel_data[label]
+            quaternion_arrs = self.quaternion_data[label] # Load quaternion data
             if emg_arrs:
                 save_dict[f'{label}_emg'] = np.array(emg_arrs, dtype=object)
             if accel_arrs:
                 save_dict[f'{label}_accel'] = np.array(accel_arrs, dtype=object)
+            if quaternion_arrs:
+                save_dict[f'{label}_quaternion'] = np.array(quaternion_arrs, dtype=object) # Save quaternion data
         np.savez(save_path, **save_dict)
         self.log(f"Saved all data to {save_path}")
         # Start training in a background thread
@@ -754,6 +788,7 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
             for label in self.labels:
                 emg_arrs = data.get(f'{label}_emg', None)
                 accel_arrs = data.get(f'{label}_accel', None)
+                quaternion_arrs = data.get(f'{label}_quaternion', None) # Load quaternion data
                 if emg_arrs is not None and accel_arrs is not None:
                     for emg, accel in zip(emg_arrs, accel_arrs):
                         min_len = min(len(emg), len(accel))
@@ -761,14 +796,27 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
                         for i in range(0, min_len - window_size, window_size):
                             emg_win = emg[i:i+window_size]
                             accel_win = accel[i:i+window_size]
+                            quaternion_win = quaternion_arrs[i:i+window_size] if quaternion_arrs is not None else np.zeros((window_size, 4))
                             emg_proc = preprocess_emg(emg_win)
-                            features = extract_all_features(emg_proc, accel_win, np.zeros_like(accel_win))
+                            features = extract_all_features(emg_proc, accel_win, quaternion_win)
                             all_features.append(features)
                             all_labels.append(label)
             if all_features:
                 X = np.array(all_features)
                 model, le = train_model(X, all_labels, all_labels)
-                self.log("Model training complete! Model saved.")
+                
+                # Save the model and label encoder for prediction
+                save_dir = os.path.join(os.path.expanduser('~'), 'MyoData')
+                os.makedirs(save_dir, exist_ok=True)
+                model_path = os.path.join(save_dir, 'trained_model.h5')
+                le_path = os.path.join(save_dir, 'label_encoder.pkl')
+                
+                model.save(model_path)
+                import pickle
+                with open(le_path, 'wb') as f:
+                    pickle.dump(le, f)
+                
+                self.log("Model training complete! Model and label encoder saved.")
             else:
                 self.log("No data to train model. Training skipped.")
         except Exception as e:
@@ -778,20 +826,176 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         self.mainloop()
 
     def _build_prediction_ui(self):
-        tk.Label(self.prediction_frame, text="Prediction Mode", font=("Helvetica", 16), bg="#e6e6e6").pack(pady=20)
-        self.pred_label = tk.Label(self.prediction_frame, text="Predicted: ...", font=("Helvetica", 18), bg="#e6e6e6")
+        # Main frame for prediction UI
+        main_frame = tk.Frame(self.prediction_frame, bg="#e6e6e6")
+        main_frame.pack(fill='both', expand=True)
+        
+        # Left: controls and status
+        left_frame = tk.Frame(main_frame, bg="#e6e6e6")
+        left_frame.pack(side='left', fill='y', padx=10, pady=10)
+        
+        # Right: plot
+        self.pred_plot_frame = tk.Frame(main_frame, bg="#e6e6e6")
+        self.pred_plot_frame.pack(side='right', fill='both', expand=True, padx=10, pady=10)
+        
+        # Prediction controls
+        tk.Label(left_frame, text="Prediction Mode", font=("Helvetica", 16), bg="#e6e6e6").pack(pady=10)
+        
+        # Model status
+        self.model_status = tk.StringVar(value="No model loaded")
+        tk.Label(left_frame, textvariable=self.model_status, font=("Helvetica", 12), bg="#e6e6e6").pack(pady=5)
+        
+        # Load model button
+        tk.Button(left_frame, text="Load Model", command=self._load_model, bg="#cccccc").pack(pady=5)
+        
+        # Prediction display
+        self.pred_label = tk.Label(left_frame, text="Predicted: ...", font=("Helvetica", 18), bg="#e6e6e6")
         self.pred_label.pack(pady=10)
-        self.pred_btn = tk.Button(self.prediction_frame, text="Start Predicting", command=self._toggle_predict, bg="#cccccc")
+        
+        # Confidence display
+        self.confidence_label = tk.Label(left_frame, text="Confidence: ...", font=("Helvetica", 12), bg="#e6e6e6")
+        self.confidence_label.pack(pady=5)
+        
+        # Start/Stop prediction button
+        self.pred_btn = tk.Button(left_frame, text="Start Predicting", command=self._toggle_predict, bg="#cccccc")
         self.pred_btn.pack(pady=10)
+        
+        # Prediction log
+        self.pred_log_widget = scrolledtext.ScrolledText(left_frame, height=8, width=45, state='disabled', font=("Consolas", 9), bg="#d9d9d9")
+        self.pred_log_widget.pack(pady=5, fill='x')
+        
+        # Prediction plot
+        self.pred_fig, self.pred_axs = plt.subplots(2, 1, figsize=(5, 4), sharex=True)
+        self.pred_fig.tight_layout(pad=2.0)
+        self.pred_canvas = FigureCanvasTkAgg(self.pred_fig, master=self.pred_plot_frame)
+        self.pred_canvas.get_tk_widget().pack(pady=5, fill='both', expand=True)
+        self._init_prediction_plot_lines()
+        
+        # Initialize prediction variables
+        self.model = None
+        self.le = None
+        self.prediction_buffer = []
+        self.prediction_window_size = 100
+        self.prediction_interval = 1000  # ms
+
+    def _init_prediction_plot_lines(self):
+        # EMG: 8 channels
+        self.pred_emg_lines = [self.pred_axs[0].plot([], [], label=f'EMG {i+1}')[0] for i in range(8)]
+        self.pred_axs[0].set_ylabel('EMG')
+        self.pred_axs[0].legend(loc='upper right', fontsize=6)
+        # Orientation: 3 Euler angles (Roll, Pitch, Yaw)
+        self.pred_accel_lines = [self.pred_axs[1].plot([], [], label=angle)[0] for angle in ['Roll', 'Pitch', 'Yaw']]
+        self.pred_axs[1].set_ylabel('Orientation (degrees)')
+        self.pred_axs[1].legend(loc='upper right', fontsize=6)
+        self.pred_axs[1].set_xlabel('Samples')
+        self.pred_fig.tight_layout(pad=2.0)
+
+    def _load_model(self):
+        try:
+            # Try to load the trained model
+            model_path = os.path.join(os.path.expanduser('~'), 'MyoData', 'trained_model.h5')
+            le_path = os.path.join(os.path.expanduser('~'), 'MyoData', 'label_encoder.pkl')
+            
+            if os.path.exists(model_path) and os.path.exists(le_path):
+                from tensorflow import keras
+                import pickle
+                
+                self.model = keras.models.load_model(model_path)
+                with open(le_path, 'rb') as f:
+                    self.le = pickle.load(f)
+                
+                self.model_status.set("Model loaded successfully")
+                self.pred_log("Model loaded successfully")
+            else:
+                self.model_status.set("No trained model found")
+                self.pred_log("No trained model found. Please train a model first.")
+        except Exception as e:
+            self.model_status.set("Error loading model")
+            self.pred_log(f"Error loading model: {e}")
 
     def _toggle_predict(self):
+        if not self.model:
+            self.pred_log("Please load a model first")
+            return
+            
         self.predicting = not self.predicting
         if self.predicting:
             self.pred_btn.config(text="Stop Predicting")
-            # Start prediction loop (implement as needed)
+            self.pred_log("Starting prediction...")
+            self.prediction_buffer = []
+            self._start_prediction_loop()
         else:
             self.pred_btn.config(text="Start Predicting")
-            # Stop prediction loop (implement as needed)
+            self.pred_log("Stopped prediction")
+
+    def _start_prediction_loop(self):
+        if self.predicting:
+            self._make_prediction()
+            self._update_prediction_plot()
+            self.after(self.prediction_interval, self._start_prediction_loop)
+
+    def _make_prediction(self):
+        if len(self.emg_buffer) >= self.prediction_window_size:
+            try:
+                # Get the latest window of data
+                emg_win = np.array(self.emg_buffer[-self.prediction_window_size:])
+                orientation_win = np.array(self.accel_buffer[-self.prediction_window_size:]) if len(self.accel_buffer) >= self.prediction_window_size else np.zeros((self.prediction_window_size, 3))
+                quaternion_win = np.array(self.gyro_buffer[-self.prediction_window_size:]) if len(self.gyro_buffer) >= self.prediction_window_size else np.zeros((self.prediction_window_size, 4))
+                
+                # Preprocess and extract features
+                emg_proc = preprocess_emg(emg_win)
+                features = extract_all_features(emg_proc, orientation_win, quaternion_win)
+                
+                # Make prediction
+                pred = self.model.predict(features.reshape(1, -1, 1), verbose=0)
+                predicted_class = np.argmax(pred)
+                confidence = np.max(pred)
+                predicted_label = self.le.inverse_transform([predicted_class])[0]
+                
+                # Update UI
+                self.pred_label.config(text=f"Predicted: {predicted_label}")
+                self.confidence_label.config(text=f"Confidence: {confidence:.2f}")
+                
+                if confidence > 0.5:  # Only log high confidence predictions
+                    self.pred_log(f"Predicted: {predicted_label} (confidence: {confidence:.2f})")
+                    
+            except Exception as e:
+                self.pred_log(f"Prediction error: {e}")
+
+    def _update_prediction_plot(self):
+        window = 200
+        # EMG
+        emg_arr = np.array(self.emg_buffer[-window:]) if len(self.emg_buffer) else np.zeros((window, 8))
+        for i, line in enumerate(self.pred_emg_lines):
+            line.set_data(np.arange(len(emg_arr)), emg_arr[:, i] if emg_arr.shape[0] else np.zeros(window))
+        self.pred_axs[0].set_xlim(0, window)
+        if emg_arr.size:
+            self.pred_axs[0].set_ylim(np.min(emg_arr)-5, np.max(emg_arr)+5)
+        else:
+            self.pred_axs[0].set_ylim(-1, 1)
+        
+        # Orientation (Euler angles)
+        if len(self.accel_buffer) >= window:
+            orientation_arr = np.array(self.accel_buffer[-window:])
+        elif len(self.accel_buffer) > 0:
+            orientation_arr = np.pad(np.array(self.accel_buffer), ((window-len(self.accel_buffer),0),(0,0)), 'constant')
+        else:
+            orientation_arr = np.zeros((window, 3))
+        for i, line in enumerate(self.pred_accel_lines):
+            line.set_data(np.arange(len(orientation_arr)), orientation_arr[:, i] if orientation_arr.shape[0] else np.zeros(window))
+        self.pred_axs[1].set_xlim(0, window)
+        if orientation_arr.size:
+            self.pred_axs[1].set_ylim(np.min(orientation_arr)-10, np.max(orientation_arr)+10)
+        else:
+            self.pred_axs[1].set_ylim(-180, 180)
+        self.pred_canvas.draw()
+
+    def pred_log(self, msg):
+        print(f"[Prediction] {msg}", flush=True)
+        self.pred_log_widget.config(state='normal')
+        self.pred_log_widget.insert('end', msg + '\n')
+        self.pred_log_widget.see('end')
+        self.pred_log_widget.config(state='disabled')
 
 if __name__ == "__main__":
     pass
