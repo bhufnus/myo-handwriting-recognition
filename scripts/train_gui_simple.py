@@ -36,6 +36,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.title("Myo Handwriting Recognition - EMG + Quaternion")
         self.geometry("1200x800")
         
+        # Add simple border around window
+        self.configure(relief='raised', bd=3)
+        
         # Parameters
         self.labels = labels
         self.samples_per_class = samples_per_class
@@ -65,8 +68,8 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.le = None
         self.pred_emg_buffer = []
         self.pred_quaternion_buffer = []
-        self.prediction_window_size = 100
-        self.last_prediction_time = 0  # Rate limiting
+        self.prediction_window_size = 400  # 2 seconds at 200Hz
+        self.last_prediction_time = 0
         
         # UI setup
         self._setup_ui()
@@ -77,6 +80,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         
         # Start plot update timer
         self._schedule_plot_update()
+        
+        # Auto-load default data file if it exists
+        self._auto_load_default_data()
         
     def _setup_ui(self):
         # Create notebook for tabs
@@ -104,7 +110,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         
         # Status
         self.status_var = tk.StringVar(value="Status: Disconnected")
-        status_label = ttk.Label(control_frame, textvariable=self.status_var, font=('Arial', 12))
+        status_label = ttk.Label(control_frame, textvariable=self.status_var, font=('Arial', 12), width=25)
         status_label.pack(side='left', padx=5)
         
         # Collection buttons
@@ -284,9 +290,6 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             messagebox.showerror("Error", "Not connected to Myo!")
             return
             
-        # Debug logging
-        self.log(f"Debug: collected[{label}] = {self.collected[label]}, samples_per_class = {self.samples_per_class}")
-        
         if self.collected[label] >= self.samples_per_class:
             messagebox.showinfo("Info", f"Already collected {self.samples_per_class} samples for {label}")
             return
@@ -371,12 +374,6 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             total_collected = sum(self.collected.values())
             total_needed = len(self.labels) * self.samples_per_class
             self.progress_var.set(f"Progress: {total_collected}/{total_needed}")
-            
-            # Debug logging
-            self.log(f"Debug: total_collected = {total_collected}, total_needed = {total_needed}")
-            self.log(f"Debug: samples_per_class = {self.samples_per_class}")
-            for label in self.labels:
-                self.log(f"Debug: {label}: collected = {self.collected[label]}")
             
             # Update plot
             self._update_plot(label)
@@ -570,9 +567,10 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             self.predicting = True
             self.pred_btn.config(text="Stop Prediction")
             self.pred_log("Prediction started")
-            self.prediction_window_size = 100
+            self.prediction_window_size = 400  # 2 seconds at 200Hz
             self.pred_emg_buffer = []
             self.pred_quaternion_buffer = []
+            self.last_prediction_time = 0
         else:
             self.predicting = False
             self.pred_btn.config(text="Start Prediction")
@@ -583,9 +581,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         if not hasattr(self, 'model') or self.model is None:
             return
             
-        # Rate limiting - max 2 predictions per second
+        # Rate limiting - predictions every 2 seconds
         now = time.time()
-        if now - self.last_prediction_time < 0.5:  # 500ms between predictions
+        if now - self.last_prediction_time < 2.0:  # 2 seconds between predictions
             return
         self.last_prediction_time = now
             
@@ -703,12 +701,6 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 total_needed = len(self.labels) * self.samples_per_class
                 self.progress_var.set(f"Progress: {total_collected}/{total_needed}")
                 
-                # Debug logging
-                self.log(f"Debug: total_collected = {total_collected}, total_needed = {total_needed}")
-                self.log(f"Debug: samples_per_class = {self.samples_per_class}")
-                for label in self.labels:
-                    self.log(f"Debug: {label}: collected = {self.collected[label]}")
-                
                 self.log(f"✅ Data loaded successfully from: {filename}")
                 self.log(f"   Total samples loaded: {total_collected}")
                 
@@ -723,6 +715,48 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         """Schedule periodic plot updates for better performance"""
         self._update_live_plot()
         self.after(50, self._schedule_plot_update)  # Update every 50ms (20 FPS)
+
+    def _auto_load_default_data(self):
+        """Automatically load the default data file if it exists"""
+        default_data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "data.npz")
+        
+        if os.path.exists(default_data_path):
+            try:
+                self.log("🔄 Auto-loading default data file...")
+                
+                # Load the data
+                loaded_data = np.load(default_data_path, allow_pickle=True)
+                
+                # Clear existing data
+                for label in self.labels:
+                    self.data[label] = []
+                    self.quaternion_data[label] = []
+                    self.collected[label] = 0
+                
+                # Load data for each label
+                for label in self.labels:
+                    emg_key = f'{label}_emg'
+                    quaternion_key = f'{label}_quaternion'
+                    
+                    if emg_key in loaded_data and quaternion_key in loaded_data:
+                        self.data[label] = list(loaded_data[emg_key])
+                        self.quaternion_data[label] = list(loaded_data[quaternion_key])
+                        self.collected[label] = len(self.data[label])
+                        
+                        self.log(f"✅ Auto-loaded {self.collected[label]} samples for {label}")
+                
+                # Update progress
+                total_collected = sum(self.collected.values())
+                total_needed = len(self.labels) * self.samples_per_class
+                self.progress_var.set(f"Progress: {total_collected}/{total_needed}")
+                
+                self.log(f"✅ Default data loaded successfully from: {default_data_path}")
+                self.log(f"   Total samples loaded: {total_collected}")
+                
+            except Exception as e:
+                self.log(f"❌ Error auto-loading default data: {e}")
+        else:
+            self.log("ℹ️ No default data file found at: data/data.npz")
 
 if __name__ == "__main__":
     print("🚀 Starting Simplified Myo Handwriting Recognition GUI")
