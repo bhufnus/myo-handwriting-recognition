@@ -20,7 +20,7 @@ def train_model(X, y, labels):
 
     model = Sequential([
         Input(shape=(X.shape[1], 1)),
-        Conv1D(32, kernel_size=3, activation='relu'),
+        Conv1D(16, kernel_size=3, activation='relu'),
         Flatten(),
         Dense(16, activation='relu'),
         Dropout(0.3),
@@ -30,7 +30,7 @@ def train_model(X, y, labels):
     model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
     X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
-    model.fit(X_train, y_train, epochs=5, validation_data=(X_test, y_test))
+    model.fit(X_train, y_train, epochs=100, validation_data=(X_test, y_test))
     
     model_path = os.path.join(output_dir, "handwriting_model.keras")
     model.save(model_path)

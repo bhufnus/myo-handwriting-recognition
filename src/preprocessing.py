@@ -42,6 +42,33 @@ def extract_quaternion_features(quaternion_window):
     max_ = np.max(quaternion_window, axis=0)
     return np.concatenate([mean, std, min_, max_])
 
+def extract_quaternion_only_features(quaternion_window):
+    """Extract enhanced features from quaternion window only (no EMG)."""
+    if len(quaternion_window) == 0:
+        return np.zeros(24)  # Increased feature count
+    quaternion_window = np.array(quaternion_window)
+    
+    # Basic statistics
+    mean = np.mean(quaternion_window, axis=0)
+    std = np.std(quaternion_window, axis=0)
+    min_ = np.min(quaternion_window, axis=0)
+    max_ = np.max(quaternion_window, axis=0)
+    
+    # Additional features
+    range_ = max_ - min_
+    variance = np.var(quaternion_window, axis=0)
+    
+    # Rate of change (velocity-like features)
+    if len(quaternion_window) > 1:
+        diff = np.diff(quaternion_window, axis=0)
+        diff_mean = np.mean(diff, axis=0)
+        diff_std = np.std(diff, axis=0)
+    else:
+        diff_mean = np.zeros(4)
+        diff_std = np.zeros(4)
+    
+    return np.concatenate([mean, std, min_, max_, range_, variance, diff_mean, diff_std])
+
 def extract_all_features(emg_window, quaternion_window):
     """Extract and concatenate features from EMG and quaternion windows."""
     emg_feat = extract_emg_features(emg_window)

@@ -19,7 +19,7 @@ import time
 import pickle
 import json
 import winsound
-from src.preprocessing import preprocess_emg, extract_all_features
+from src.preprocessing import preprocess_emg, extract_all_features, extract_quaternion_only_features
 from src.model import train_model
 from src.utils import get_sdk_path
 import tensorflow as tf
@@ -29,7 +29,7 @@ sdk_path = get_sdk_path()
 myo.init(sdk_path=sdk_path)
 
 class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
-    def __init__(self, labels=['A', 'B', 'C'], samples_per_class=10, duration_ms=2000):
+    def __init__(self, labels=['A', 'B', 'C'], samples_per_class=60, duration_ms=2000):
         tk.Tk.__init__(self)
         myo.DeviceListener.__init__(self)
         
@@ -116,6 +116,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         # Save and Train buttons
         save_btn = ttk.Button(control_frame, text="Save Data", command=self.save_data)
         save_btn.pack(side='left', padx=5)
+        
+        load_btn = ttk.Button(control_frame, text="Load Data", command=self.load_data)
+        load_btn.pack(side='left', padx=5)
         
         train_btn = ttk.Button(control_frame, text="Train Model", command=self.train_model)
         train_btn.pack(side='left', padx=5)
@@ -281,6 +284,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             messagebox.showerror("Error", "Not connected to Myo!")
             return
             
+        # Debug logging
+        self.log(f"Debug: collected[{label}] = {self.collected[label]}, samples_per_class = {self.samples_per_class}")
+        
         if self.collected[label] >= self.samples_per_class:
             messagebox.showinfo("Info", f"Already collected {self.samples_per_class} samples for {label}")
             return
@@ -365,6 +371,12 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             total_collected = sum(self.collected.values())
             total_needed = len(self.labels) * self.samples_per_class
             self.progress_var.set(f"Progress: {total_collected}/{total_needed}")
+            
+            # Debug logging
+            self.log(f"Debug: total_collected = {total_collected}, total_needed = {total_needed}")
+            self.log(f"Debug: samples_per_class = {self.samples_per_class}")
+            for label in self.labels:
+                self.log(f"Debug: {label}: collected = {self.collected[label]}")
             
             # Update plot
             self._update_plot(label)
@@ -654,6 +666,59 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             self.log(f"❌ Error saving data: {e}")
             messagebox.showerror("Error", f"Failed to save data:\n{e}")
 
+    def load_data(self):
+        """Load previously saved training data"""
+        try:
+            # Ask for file to load
+            filename = filedialog.askopenfilename(
+                title="Load Training Data",
+                filetypes=[("NumPy files", "*.npz"), ("All files", "*.*")],
+                initialdir=os.getcwd()  # Start in current directory
+            )
+            
+            if filename:  # User didn't cancel
+                # Load the data
+                loaded_data = np.load(filename, allow_pickle=True)
+                
+                # Clear existing data
+                for label in self.labels:
+                    self.data[label] = []
+                    self.quaternion_data[label] = []
+                    self.collected[label] = 0
+                
+                # Load data for each label
+                for label in self.labels:
+                    emg_key = f'{label}_emg'
+                    quaternion_key = f'{label}_quaternion'
+                    
+                    if emg_key in loaded_data and quaternion_key in loaded_data:
+                        self.data[label] = list(loaded_data[emg_key])
+                        self.quaternion_data[label] = list(loaded_data[quaternion_key])
+                        self.collected[label] = len(self.data[label])
+                        
+                        self.log(f"✅ Loaded {self.collected[label]} samples for {label}")
+                
+                # Update progress
+                total_collected = sum(self.collected.values())
+                total_needed = len(self.labels) * self.samples_per_class
+                self.progress_var.set(f"Progress: {total_collected}/{total_needed}")
+                
+                # Debug logging
+                self.log(f"Debug: total_collected = {total_collected}, total_needed = {total_needed}")
+                self.log(f"Debug: samples_per_class = {self.samples_per_class}")
+                for label in self.labels:
+                    self.log(f"Debug: {label}: collected = {self.collected[label]}")
+                
+                self.log(f"✅ Data loaded successfully from: {filename}")
+                self.log(f"   Total samples loaded: {total_collected}")
+                
+                # Show success message
+                messagebox.showinfo("Success", f"Data loaded from:\n{filename}\n\nTotal samples: {total_collected}")
+                
+        except Exception as e:
+            self.log(f"❌ Error loading data: {e}")
+            messagebox.showerror("Error", f"Failed to load data:\n{e}")
+
     def _schedule_plot_update(self):
         """Schedule periodic plot updates for better performance"""
         self._update_live_plot()
@@ -661,11 +726,11 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
 
 if __name__ == "__main__":
     print("🚀 Starting Simplified Myo Handwriting Recognition GUI")
-    print("Using EMG + Quaternion data only")
+    print("Using EMG + Quaternion data")
     print("=" * 50)
     
     try:
-        app = SimpleMyoGUI(labels=['A', 'B', 'C'], samples_per_class=10, duration_ms=2000)
+        app = SimpleMyoGUI(labels=['A', 'B', 'C'], samples_per_class=60, duration_ms=2000)
         print("✅ GUI created successfully")
         app.mainloop()
     except Exception as e:
