@@ -271,6 +271,14 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.log_text = scrolledtext.ScrolledText(log_frame, height=8)
         self.log_text.pack(fill='both', expand=True)
         
+        # Reset Data button in bottom right corner
+        reset_frame = ttk.Frame(self.train_frame)
+        reset_frame.pack(fill='x', padx=10, pady=5)
+        
+        reset_btn = ttk.Button(reset_frame, text="Reset Data", command=self.reset_data, 
+                             style='Danger.TButton')
+        reset_btn.pack(side='right', padx=5)
+        
     def _setup_prediction_ui(self):
         # Control frame for prediction
         pred_control_frame = ttk.Frame(self.pred_frame)
@@ -900,6 +908,38 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         elif event.char.lower() == 't':
             # 'T' key to train model
             self.train_model()
+
+    def new_training(self):
+        """Clear all collected data and reset progress counters"""
+        for label in self.labels:
+            self.data[label] = []
+            self.quaternion_data[label] = []
+            self.collected[label] = 0
+        
+        self.progress_var.set("Progress: 0/0")
+        self.log("All collected data cleared and progress counters reset")
+
+    def reset_data(self):
+        """Reset all collected data and reset progress counters"""
+        # Show confirmation dialog
+        total_samples = sum(self.collected.values())
+        if total_samples > 0:
+            result = messagebox.askyesno(
+                "Confirm Reset", 
+                f"This will clear all {total_samples} collected samples.\n\nAre you sure you want to reset all data?",
+                icon='warning'
+            )
+            if not result:
+                return
+        
+        # Clear all data
+        for label in self.labels:
+            self.data[label] = []
+            self.quaternion_data[label] = []
+            self.collected[label] = 0
+        
+        self.progress_var.set("Progress: 0/0")
+        self.log("✅ All collected data cleared and progress counters reset")
 
 if __name__ == "__main__":
     print("🚀 Starting Simplified Myo Handwriting Recognition GUI")
