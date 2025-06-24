@@ -24,6 +24,112 @@ from src.model import train_model
 from src.utils import get_sdk_path
 import tensorflow as tf
 
+# Try to import sounddevice for square wave beeps
+try:
+    import sounddevice as sd
+    SOUNDDEVICE_AVAILABLE = True
+except ImportError:
+    SOUNDDEVICE_AVAILABLE = False
+    print("⚠️ sounddevice not available, using winsound for beeps")
+
+# Global audio stream for beeps
+audio_stream = None
+
+def play_square_wave_beep(frequency, duration_ms, volume=0.2):
+    """Play a sine wave beep using sounddevice with improved envelope and audio handling"""
+    global audio_stream
+    
+    if not SOUNDDEVICE_AVAILABLE:
+        return
+    
+    try:
+        # Generate sine wave samples with higher quality
+        sample_rate = 48000  # Higher sample rate for better quality
+        duration_sec = duration_ms / 1000.0
+        num_samples = int(sample_rate * duration_sec)
+        
+        # Add some padding to prevent clipping
+        padding_samples = int(sample_rate * 0.01)  # 10ms padding
+        total_samples = num_samples + padding_samples
+        
+        t = np.linspace(0, duration_sec, num_samples, False)
+        
+        # Create sine wave
+        sine_wave = np.sin(2 * np.pi * frequency * t)
+        
+        # Create smoother envelope with longer transitions
+        # Envelope parameters (as fractions of total duration)
+        attack_time = 0.10  # 15% of duration for attack
+        release_time = 0.20  # 25% of duration for release
+        
+        attack_samples = max(1, int(num_samples * attack_time))
+        release_samples = max(1, int(num_samples * release_time))
+        sustain_samples = num_samples - attack_samples - release_samples
+        
+        # Ensure we have at least some sustain
+        if sustain_samples < 1:
+            # If duration is too short, use shorter attack/release
+            attack_samples = max(1, num_samples // 4)
+            release_samples = max(1, num_samples // 4)
+            sustain_samples = num_samples - attack_samples - release_samples
+        
+        # Create envelope with smoother curves
+        envelope = np.ones(total_samples)  # Include padding in envelope
+        
+        # Attack (fade in) - use smooth linear ramp for volume
+        if attack_samples > 0:
+            # Use a smooth curve that goes from 0 to 1 (not cosine which affects pitch)
+            attack_curve = np.linspace(0, 1, attack_samples)
+            # Apply a slight curve to make it smoother (but not cosine)
+            attack_curve = np.power(attack_curve, 0.5)  # Square root curve for smooth fade
+            envelope[:attack_samples] = attack_curve
+        
+        # Release (fade out) - use smooth linear ramp for volume
+        if release_samples > 0:
+            # Use a smooth curve that goes from 1 to 0
+            release_curve = np.linspace(1, 0, release_samples)
+            # Apply a slight curve to make it smoother
+            release_curve = np.power(release_curve, 0.5)  # Square root curve for smooth fade
+            envelope[num_samples-release_samples:num_samples] = release_curve
+        
+        # Ensure the padding is silent
+        envelope[num_samples:] = 0
+        
+        # Extend sine wave with silence for padding
+        sine_wave_padded = np.zeros(total_samples)
+        sine_wave_padded[:num_samples] = sine_wave
+        
+        # Apply envelope to sine wave
+        audio_data = (sine_wave_padded * envelope * volume).astype(np.float32)
+        
+        # Ensure audio doesn't clip by normalizing if needed
+        max_val = np.max(np.abs(audio_data))
+        if max_val > 0.95:
+            audio_data = audio_data * (0.95 / max_val)
+        
+        # Create or reuse audio stream
+        if audio_stream is None or audio_stream.closed:
+            audio_stream = sd.OutputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype=np.float32,
+                blocksize=1024
+            )
+            audio_stream.start()
+        
+        # Play the audio using the persistent stream
+        audio_stream.write(audio_data)
+        
+    except Exception as e:
+        print(f"Error playing sine wave beep: {e}")
+        # Reset stream on error
+        if audio_stream is not None:
+            try:
+                audio_stream.close()
+            except:
+                pass
+            audio_stream = None
+
 # Initialize Myo SDK
 sdk_path = get_sdk_path()
 myo.init(sdk_path=sdk_path)
@@ -84,6 +190,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         # Auto-load default data file if it exists
         self._auto_load_default_data()
         
+        # Bind keyboard shortcuts
+        self.bind('<Key>', self._on_key_press)
+        
     def _setup_ui(self):
         # Create notebook for tabs
         self.notebook = ttk.Notebook(self)
@@ -113,11 +222,21 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         status_label = ttk.Label(control_frame, textvariable=self.status_var, font=('Arial', 12), width=25)
         status_label.pack(side='left', padx=5)
         
-        # Collection buttons
-        for label in self.labels:
-            btn = ttk.Button(control_frame, text=f"Collect {label}", 
-                           command=lambda l=label: self._start_collection(l))
-            btn.pack(side='left', padx=5)
+        # Collection controls frame
+        collection_frame = ttk.Frame(control_frame)
+        collection_frame.pack(side='left', padx=20)
+        
+        # Class selection dropdown
+        ttk.Label(collection_frame, text="Class:").pack(side='left', padx=(0, 5))
+        self.class_var = tk.StringVar(value=self.labels[0])
+        self.class_dropdown = ttk.Combobox(collection_frame, textvariable=self.class_var, 
+                                         values=self.labels, state='readonly', width=10)
+        self.class_dropdown.pack(side='left', padx=(0, 10))
+        
+        # Record button
+        self.record_btn = ttk.Button(collection_frame, text="Record", 
+                                   command=self._start_recording)
+        self.record_btn.pack(side='left', padx=5)
         
         # Save and Train buttons
         save_btn = ttk.Button(control_frame, text="Save Data", command=self.save_data)
@@ -285,13 +404,14 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             if len(self.pred_quaternion_buffer) > self.prediction_window_size:
                 self.pred_quaternion_buffer = self.pred_quaternion_buffer[-self.prediction_window_size:]
             
-    def _start_collection(self, label):
+    def _start_recording(self):
+        """Start recording data for the selected class"""
         if not self.connected:
             messagebox.showerror("Error", "Not connected to Myo!")
             return
             
-        if self.collected[label] >= self.samples_per_class:
-            messagebox.showinfo("Info", f"Already collected {self.samples_per_class} samples for {label}")
+        if self.collected[self.class_var.get()] >= self.samples_per_class:
+            messagebox.showinfo("Info", f"Already collected {self.samples_per_class} samples for {self.class_var.get()}")
             return
             
         self.collecting = False  # Don't start collecting yet
@@ -300,11 +420,11 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         
         # Show preparation indicator
         self.recording_indicator.config(text="⏸", fg='orange')
-        self.status_var.set(f"Get ready for {label}...")
-        self.log(f"Preparing to collect {label} - recording starts in 1 second")
+        self.status_var.set(f"Get ready for {self.class_var.get()}...")
+        self.log(f"Preparing to collect {self.class_var.get()} - recording starts in 1 second")
         
         # Wait 1 second then start recording
-        self.after(1000, lambda: self._begin_recording(label))
+        self.after(1000, lambda: self._begin_recording(self.class_var.get()))
         
     def _begin_recording(self, label):
         """Actually start recording data"""
@@ -330,7 +450,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
     def _play_start_beep(self):
         """Play start beep in background thread"""
         try:
-            winsound.Beep(1200, 300)  # 1200Hz, 300ms
+            play_square_wave_beep(880, 200, volume=0.1)  # 400Hz, 800ms, very quiet (soothing low tone)
         except:
             pass
         
@@ -383,9 +503,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
     def _play_stop_beep(self):
         """Play stop beep in background thread"""
         try:
-            winsound.Beep(1000, 150)  # 1000Hz, 150ms
-            time.sleep(0.1)
-            winsound.Beep(1000, 150)  # 1000Hz, 150ms
+            play_square_wave_beep(440, 150, volume=0.1)  
+            time.sleep(0.02)
+            play_square_wave_beep(440, 150, volume=0.1)  
         except:
             pass
         
@@ -577,13 +697,13 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             self.pred_log("Prediction stopped")
             
     def make_prediction(self):
-        """Make prediction with current data - optimized for performance"""
+        """Make prediction with current data - optimized for GPU performance"""
         if not hasattr(self, 'model') or self.model is None:
             return
             
-        # Rate limiting - predictions every 2 seconds
+        # Rate limiting - predictions every 1 second (faster with GPU)
         now = time.time()
-        if now - self.last_prediction_time < 2.0:  # 2 seconds between predictions
+        if now - self.last_prediction_time < 1.0:  # 1 second between predictions
             return
         self.last_prediction_time = now
             
@@ -597,20 +717,20 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 emg_proc = preprocess_emg(emg_win)
                 features = extract_all_features(emg_proc, quaternion_win)
                 
-                # Make prediction with reduced verbosity
-                pred = self.model.predict(features.reshape(1, -1, 1), verbose=0)
+                # Make prediction with GPU optimization
+                pred = self.model.predict(features.reshape(1, -1, 1), verbose=0, batch_size=1)
                 predicted_class = np.argmax(pred)
                 confidence = np.max(pred)
                 predicted_label = self.le.inverse_transform([predicted_class])[0]
                 
-                # Only update UI if confidence is high enough
-                if confidence > 0.3:  # Lower threshold for more responsive predictions
+                # Update UI for all predictions (lower threshold with GPU)
+                if confidence > 0.2:  # Lower threshold for more responsive predictions
                     # Update UI
                     self.pred_result_var.set(f"Prediction: {predicted_label}")
                     self.confidence_var.set(f"Confidence: {confidence:.1%}")
                     
-                    # Only log high confidence predictions to reduce spam
-                    if confidence > 0.6:
+                    # Log predictions more frequently
+                    if confidence > 0.5:
                         self.pred_log(f"Predicted: {predicted_label} (confidence: {confidence:.1%})")
                     
             except Exception as e:
@@ -695,6 +815,11 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                         self.collected[label] = len(self.data[label])
                         
                         self.log(f"✅ Loaded {self.collected[label]} samples for {label}")
+                    else:
+                        self.log(f"⚠️ No data found for {label} in file")
+                        self.data[label] = []
+                        self.quaternion_data[label] = []
+                        self.collected[label] = 0
                 
                 # Update progress
                 total_collected = sum(self.collected.values())
@@ -744,6 +869,11 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                         self.collected[label] = len(self.data[label])
                         
                         self.log(f"✅ Auto-loaded {self.collected[label]} samples for {label}")
+                    else:
+                        self.log(f"⚠️ No data found for {label} in file")
+                        self.data[label] = []
+                        self.quaternion_data[label] = []
+                        self.collected[label] = 0
                 
                 # Update progress
                 total_collected = sum(self.collected.values())
@@ -757,6 +887,19 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 self.log(f"❌ Error auto-loading default data: {e}")
         else:
             self.log("ℹ️ No default data file found at: data/data.npz")
+
+    def _on_key_press(self, event):
+        """Handle keyboard shortcuts"""
+        if event.char.lower() == 'r':
+            # Only allow recording if not already collecting and connected
+            if not self.collecting and self.connected:
+                self._start_recording()
+        elif event.char.lower() == 's':
+            # 'S' key to save data
+            self.save_data()
+        elif event.char.lower() == 't':
+            # 'T' key to train model
+            self.train_model()
 
 if __name__ == "__main__":
     print("🚀 Starting Simplified Myo Handwriting Recognition GUI")
