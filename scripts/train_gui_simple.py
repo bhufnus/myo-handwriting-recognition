@@ -19,7 +19,7 @@ import time
 import pickle
 import json
 import winsound
-from src.preprocessing import preprocess_emg, extract_all_features, extract_quaternion_only_features
+from src.preprocessing import preprocess_emg
 from src.model import train_model
 from src.utils import get_sdk_path
 import tensorflow as tf
@@ -155,6 +155,11 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.quaternion_data = {label: [] for label in labels}
         self.collected = {label: 0 for label in labels}
         
+        # Variation tracking
+        self.variation_types = ['Normal', 'Fast', 'Slow', 'High', 'Low', 'Relaxed', 'Focused']
+        self.current_variation = 0
+        self.variation_notes = {label: [] for label in labels}
+        
         # Buffers
         self.emg_buffer = []  # For live display
         self.quaternion_buffer = []  # For live display
@@ -189,6 +194,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         
         # Auto-load default data file if it exists
         self._auto_load_default_data()
+        
+        # Initialize class count display
+        self._update_class_count(None)
         
         # Bind keyboard shortcuts
         self.bind('<Key>', self._on_key_press)
@@ -233,10 +241,31 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                                          values=self.labels, state='readonly', width=10)
         self.class_dropdown.pack(side='left', padx=(0, 10))
         
+        # Variation selection dropdown
+        ttk.Label(collection_frame, text="Variation:").pack(side='left', padx=(0, 5))
+        self.variation_var = tk.StringVar(value=self.variation_types[0])
+        self.variation_dropdown = ttk.Combobox(collection_frame, textvariable=self.variation_var,
+                                             values=self.variation_types, state='readonly', width=10)
+        self.variation_dropdown.pack(side='left', padx=(0, 10))
+        
+        # Class count label
+        self.class_count_var = tk.StringVar(value="(0/60)")
+        self.class_count_label = ttk.Label(collection_frame, textvariable=self.class_count_var, 
+                                         font=('Arial', 10, 'bold'))
+        self.class_count_label.pack(side='left', padx=(0, 10))
+        
+        # Update class count when class changes
+        self.class_dropdown.bind('<<ComboboxSelected>>', self._update_class_count)
+        
         # Record button
         self.record_btn = ttk.Button(collection_frame, text="Record", 
                                    command=self._start_recording)
         self.record_btn.pack(side='left', padx=5)
+        
+        # Undo last recording button
+        self.undo_btn = ttk.Button(collection_frame, text="Undo Last", 
+                                  command=self._undo_last_recording)
+        self.undo_btn.pack(side='left', padx=5)
         
         # Save and Train buttons
         save_btn = ttk.Button(control_frame, text="Save Data", command=self.save_data)
@@ -247,6 +276,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         
         train_btn = ttk.Button(control_frame, text="Train Model", command=self.train_model)
         train_btn.pack(side='left', padx=5)
+        
+        stats_btn = ttk.Button(control_frame, text="Show Variations", command=self.show_variation_stats)
+        stats_btn.pack(side='left', padx=5)
         
         # Progress
         self.progress_var = tk.StringVar(value="Progress: 0/0")
@@ -287,6 +319,10 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         # Load model button
         load_btn = ttk.Button(pred_control_frame, text="Load Model", command=self.load_model)
         load_btn.pack(side='left', padx=5)
+        
+        # Clear model button
+        clear_model_btn = ttk.Button(pred_control_frame, text="Clear Model", command=self.clear_model)
+        clear_model_btn.pack(side='left', padx=5)
         
         # Start/Stop prediction button
         self.pred_btn = ttk.Button(pred_control_frame, text="Start Prediction", command=self.toggle_prediction)
@@ -488,20 +524,58 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         # Play stop recording beep in background
         threading.Thread(target=self._play_stop_beep, daemon=True).start()
         
-        # Store data
+        # Store data with length standardization
         if len(self.collection_emg_buffer) > 0:
-            self.data[label].append(np.array(self.collection_emg_buffer))
-            self.quaternion_data[label].append(np.array(self.collection_quaternion_buffer))
+            # Standardize length to 100 samples (0.5 seconds at 200Hz)
+            target_length = 100
+            
+            # Get the minimum length to ensure both have same length
+            min_len = min(len(self.collection_emg_buffer), len(self.collection_quaternion_buffer))
+            
+            # Truncate both to the same length, then to target length
+            emg_data = np.array(self.collection_emg_buffer[:min_len])
+            quaternion_data = np.array(self.collection_quaternion_buffer[:min_len])
+            
+            # If we have more than target_length, take the middle portion
+            if min_len > target_length:
+                start_idx = (min_len - target_length) // 2
+                emg_data = emg_data[start_idx:start_idx + target_length]
+                quaternion_data = quaternion_data[start_idx:start_idx + target_length]
+            elif min_len < target_length:
+                # Pad with zeros if too short (shouldn't happen with 2-second recording)
+                emg_pad = np.zeros((target_length - min_len, 8))
+                quaternion_pad = np.zeros((target_length - min_len, 4))
+                emg_data = np.vstack([emg_data, emg_pad])
+                quaternion_data = np.vstack([quaternion_data, quaternion_pad])
+            
+            # Store the standardized data
+            self.data[label].append(emg_data)
+            self.quaternion_data[label].append(quaternion_data)
             self.collected[label] += 1
             
             self.log(f"Collected sample {self.collected[label]}/{self.samples_per_class} for {label}")
-            self.log(f"  EMG samples: {len(self.collection_emg_buffer)}")
-            self.log(f"  Quaternion samples: {len(self.collection_quaternion_buffer)}")
+            self.log(f"  Original EMG: {len(self.collection_emg_buffer)}, Quaternion: {len(self.collection_quaternion_buffer)}")
+            self.log(f"  Standardized to: {emg_data.shape[0]} timesteps")
+            self.log(f"  Variation: {self.variation_var.get()}")
+            
+            # Store variation note
+            self.variation_notes[label].append(self.variation_var.get())
+            
+            # Check if we've reached the limit for this class
+            if self.collected[label] >= self.samples_per_class:
+                self.log(f"✅ Reached limit of {self.samples_per_class} samples for {label}")
+                # Disable recording for this class
+                if self.class_var.get() == label:
+                    self.record_btn.config(state='disabled')
+                    self.record_btn.config(text="Limit Reached")
             
             # Update progress
             total_collected = sum(self.collected.values())
             total_needed = len(self.labels) * self.samples_per_class
             self.progress_var.set(f"Progress: {total_collected}/{total_needed}")
+            
+            # Update class count
+            self._update_class_count(None)
             
             # Update plot
             self._update_plot(label)
@@ -592,12 +666,12 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 messagebox.showerror("Error", f"Not enough data! Need at least 3 samples, got {total_samples}")
                 return
             
-            # Prepare training data
-            all_features = []
+            # Prepare training data for sequence model
+            all_windows = []
             all_labels = []
-            window_size = 100
+            window_size = 100  # Match the model's expected window size
             
-            self.log("📊 Preparing training data...")
+            self.log("📊 Preparing sequence training data...")
             
             for label in self.labels:
                 if not self.data[label]:
@@ -610,32 +684,62 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 self.log(f"   Processing {label}: {len(emg_arrs)} samples")
                 
                 for i, (emg_arr, quaternion_arr) in enumerate(zip(emg_arrs, quaternion_arrs)):
-                    # Create sliding windows
-                    for j in range(0, len(emg_arr) - window_size + 1, window_size // 2):
-                        emg_win = emg_arr[j:j+window_size]
-                        quaternion_win = quaternion_arr[j:j+window_size] if j < len(quaternion_arr) else np.zeros((window_size, 4))
-                        
-                        # Preprocess and extract features
-                        emg_proc = preprocess_emg(emg_win)
-                        features = extract_all_features(emg_proc, quaternion_win)
-                        
-                        all_features.append(features)
-                        all_labels.append(label)
+                    # Data is now standardized to 100 timesteps during collection
+                    if len(emg_arr) >= window_size and len(quaternion_arr) >= window_size:
+                        # Create sliding windows for sequence model
+                        for j in range(0, len(emg_arr) - window_size + 1, window_size // 2):
+                            emg_win = emg_arr[j:j+window_size]
+                            quaternion_win = quaternion_arr[j:j+window_size]
+                            
+                            # Preprocess EMG
+                            emg_proc = preprocess_emg(emg_win)
+                            
+                            # Concatenate EMG and quaternion for sequence input
+                            # Shape: (window_size, 12) - 8 EMG channels + 4 quaternion components
+                            X_win = np.concatenate([emg_proc, quaternion_win], axis=1)
+                            
+                            all_windows.append(X_win)
+                            all_labels.append(label)
             
-            if not all_features:
-                messagebox.showerror("Error", "No valid training data could be extracted!")
+            if not all_windows:
+                messagebox.showerror("Error", "No valid training sequences could be extracted!")
                 return
                 
-            # Convert to numpy arrays
-            X = np.array(all_features)
+            # Convert to numpy arrays for sequence model
+            X = np.array(all_windows)  # Shape: (num_samples, window_size, 12)
             y = np.array(all_labels)
             
-            self.log(f"✅ Training data prepared: {X.shape[0]} samples, {X.shape[1]} features")
-            self.log(f"   Feature vector size: {X.shape[1]}")
+            self.log(f"✅ Sequence training data prepared: {X.shape[0]} samples")
+            self.log(f"   Input shape: {X.shape} (samples, window_size, features)")
+            self.log(f"   Window size: {window_size}")
+            self.log(f"   Features per timestep: {X.shape[2]}")
             self.log(f"   Labels: {np.unique(y)}")
             
+            # Check class distribution
+            unique_labels, counts = np.unique(y, return_counts=True)
+            self.log(f"📊 Class distribution:")
+            for label, count in zip(unique_labels, counts):
+                self.log(f"   {label}: {count} samples ({count/len(y)*100:.1f}%)")
+            
+            # Check for class imbalance
+            min_samples = min(counts)
+            max_samples = max(counts)
+            imbalance_ratio = max_samples / min_samples if min_samples > 0 else float('inf')
+            self.log(f"   Imbalance ratio: {imbalance_ratio:.2f}x (max/min)")
+            
+            if imbalance_ratio > 2.0:
+                self.log(f"⚠️  WARNING: Significant class imbalance detected!")
+                self.log(f"   Consider collecting more samples for underrepresented classes")
+            
+            # Check data quality
+            self.log(f"🔍 Data quality check:")
+            self.log(f"   EMG range: {np.min(X[:, :, :8]):.2f} to {np.max(X[:, :, :8]):.2f}")
+            self.log(f"   Quaternion range: {np.min(X[:, :, 8:]):.2f} to {np.max(X[:, :, 8:]):.2f}")
+            self.log(f"   Any NaN values: {np.any(np.isnan(X))}")
+            self.log(f"   Any infinite values: {np.any(np.isinf(X))}")
+            
             # Train model
-            self.log("🧠 Training neural network...")
+            self.log("🧠 Training LSTM sequence model...")
             self.model, self.le = train_model(X, y, self.labels)
             
             self.log("✅ Model training completed!")
@@ -673,6 +777,10 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 # Load model
                 self.model = tf.keras.models.load_model(model_filename)
                 
+                # Check model input shape
+                expected_shape = self.model.input_shape
+                self.pred_log(f"Model expects input shape: {expected_shape}")
+                
                 # Load label encoder
                 le_filename = model_filename.replace('.h5', '_labels.pkl')
                 with open(le_filename, 'rb') as f:
@@ -695,7 +803,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             self.predicting = True
             self.pred_btn.config(text="Stop Prediction")
             self.pred_log("Prediction started")
-            self.prediction_window_size = 400  # 2 seconds at 200Hz
+            self.prediction_window_size = 100  # Match training window size
             self.pred_emg_buffer = []
             self.pred_quaternion_buffer = []
             self.last_prediction_time = 0
@@ -721,15 +829,43 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 emg_win = np.array(self.pred_emg_buffer[-self.prediction_window_size:])
                 quaternion_win = np.array(self.pred_quaternion_buffer[-self.prediction_window_size:]) if len(self.pred_quaternion_buffer) >= self.prediction_window_size else np.zeros((self.prediction_window_size, 4))
                 
-                # Preprocess and extract features
-                emg_proc = preprocess_emg(emg_win)
-                features = extract_all_features(emg_proc, quaternion_win)
+                # Ensure both have the same length
+                min_len = min(len(emg_win), len(quaternion_win))
+                emg_win = emg_win[:min_len]
+                quaternion_win = quaternion_win[:min_len]
                 
-                # Make prediction with GPU optimization
-                pred = self.model.predict(features.reshape(1, -1, 1), verbose=0, batch_size=1)
+                # Debug: log data shapes occasionally
+                if len(self.pred_emg_buffer) % 200 == 0:  # Every 200th sample
+                    self.pred_log(f"Debug: EMG shape {emg_win.shape}, Quaternion shape {quaternion_win.shape}")
+                
+                # Preprocess EMG
+                emg_proc = preprocess_emg(emg_win)
+                
+                # Create sequence input for LSTM model
+                # Shape: (window_size, 12) - 8 EMG channels + 4 quaternion components
+                X_win = np.concatenate([emg_proc, quaternion_win], axis=1)
+                
+                # Reshape for model input: (1, window_size, 12)
+                X_sequence = X_win.reshape(1, X_win.shape[0], X_win.shape[1])
+                
+                # Debug: log input shape occasionally
+                if len(self.pred_emg_buffer) % 200 == 0:
+                    self.pred_log(f"Debug: Model input shape {X_sequence.shape}")
+                
+                # Make prediction with sequence model
+                pred = self.model.predict(X_sequence, verbose=0, batch_size=1)
                 predicted_class = np.argmax(pred)
                 confidence = np.max(pred)
-                predicted_label = self.le.inverse_transform([predicted_class])[0]
+                
+                # Debug: log prediction values occasionally
+                if len(self.pred_emg_buffer) % 200 == 0:
+                    self.pred_log(f"Debug: Raw prediction {pred}, class {predicted_class}, confidence {confidence:.3f}")
+                
+                # Safety check for label encoder
+                if self.le is not None:
+                    predicted_label = self.le.inverse_transform([predicted_class])[0]
+                else:
+                    predicted_label = f"Class_{predicted_class}"
                 
                 # Update UI for all predictions (lower threshold with GPU)
                 if confidence > 0.2:  # Lower threshold for more responsive predictions
@@ -740,10 +876,16 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                     # Log predictions more frequently
                     if confidence > 0.5:
                         self.pred_log(f"Predicted: {predicted_label} (confidence: {confidence:.1%})")
+                else:
+                    # Show low confidence predictions too
+                    self.pred_result_var.set(f"Prediction: {predicted_label}")
+                    self.confidence_var.set(f"Confidence: {confidence:.1%}")
                     
             except Exception as e:
-                # Don't log every prediction error to reduce spam
-                pass
+                # Log prediction errors for debugging
+                self.pred_log(f"Prediction error: {e}")
+                import traceback
+                self.pred_log(f"Traceback: {traceback.format_exc()}")
                 
     def pred_log(self, message):
         """Log message to prediction log"""
@@ -834,6 +976,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 total_needed = len(self.labels) * self.samples_per_class
                 self.progress_var.set(f"Progress: {total_collected}/{total_needed}")
                 
+                # Update class count
+                self._update_class_count(None)
+                
                 self.log(f"✅ Data loaded successfully from: {filename}")
                 self.log(f"   Total samples loaded: {total_collected}")
                 
@@ -888,6 +1033,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 total_needed = len(self.labels) * self.samples_per_class
                 self.progress_var.set(f"Progress: {total_collected}/{total_needed}")
                 
+                # Update class count
+                self._update_class_count(None)
+                
                 self.log(f"✅ Default data loaded successfully from: {default_data_path}")
                 self.log(f"   Total samples loaded: {total_collected}")
                 
@@ -908,6 +1056,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         elif event.char.lower() == 't':
             # 'T' key to train model
             self.train_model()
+        elif event.char.lower() == 'u':
+            # 'U' key to undo last recording
+            self._undo_last_recording()
 
     def new_training(self):
         """Clear all collected data and reset progress counters"""
@@ -940,6 +1091,73 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         
         self.progress_var.set("Progress: 0/0")
         self.log("✅ All collected data cleared and progress counters reset")
+
+    def _undo_last_recording(self):
+        """Undo the last recorded data for the current class"""
+        if not self.data[self.class_var.get()]:
+            messagebox.showinfo("Info", "No data to undo for the current class")
+            return
+            
+        # Remove the last recorded data
+        self.data[self.class_var.get()].pop()
+        self.quaternion_data[self.class_var.get()].pop()
+        self.collected[self.class_var.get()] -= 1
+        
+        # Update progress
+        total_collected = sum(self.collected.values())
+        total_needed = len(self.labels) * self.samples_per_class
+        self.progress_var.set(f"Progress: {total_collected}/{total_needed}")
+        
+        # Update class count
+        self._update_class_count(None)
+        
+        # Update plot
+        self._update_plot(self.class_var.get())
+        
+        self.log(f"✅ Last recorded data for {self.class_var.get()} removed")
+
+    def _update_class_count(self, event):
+        """Update the class count label when the class changes"""
+        selected_class = self.class_var.get()
+        self.class_count_var.set(f"({self.collected[selected_class]}/{self.samples_per_class})")
+        
+        # Update record button state
+        if self.collected[selected_class] >= self.samples_per_class:
+            self.record_btn.config(state='disabled')
+            self.record_btn.config(text="Limit Reached")
+        else:
+            self.record_btn.config(state='normal')
+            self.record_btn.config(text="Record")
+
+    def clear_model(self):
+        """Clear the current model and reset prediction variables"""
+        self.model = None
+        self.le = None
+        self.pred_emg_buffer = []
+        self.pred_quaternion_buffer = []
+        self.prediction_window_size = 400  # Reset to default
+        self.last_prediction_time = 0
+        self.pred_log("Model cleared")
+        self.pred_result_var.set("Prediction: None")
+        self.confidence_var.set("Confidence: 0%")
+        self.pred_log_text.delete('1.0', 'end')
+        self.log("Model cleared")
+
+    def show_variation_stats(self):
+        """Show variation statistics for collected data"""
+        self.log("📊 Variation Statistics:")
+        for label in self.labels:
+            if self.variation_notes[label]:
+                self.log(f"  {label}: {len(self.variation_notes[label])} samples")
+                # Count variations
+                variation_counts = {}
+                for variation in self.variation_notes[label]:
+                    variation_counts[variation] = variation_counts.get(variation, 0) + 1
+                
+                for variation, count in variation_counts.items():
+                    self.log(f"    {variation}: {count} samples")
+            else:
+                self.log(f"  {label}: No samples collected")
 
 if __name__ == "__main__":
     print("🚀 Starting Simplified Myo Handwriting Recognition GUI")

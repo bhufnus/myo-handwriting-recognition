@@ -56,7 +56,7 @@ class App(tk.Tk, myo.DeviceListener):
 
     def on_connected(self, event):
         event.device.stream_emg(True)
-        self.status.set(f"Myo connected: {event.device_name}")
+        # self.status.set(f"Myo connected: {event.device_name}")  # Removed: not used in App
 
     def on_disconnected(self, event):
         print("Myo disconnected!")
@@ -75,7 +75,7 @@ class App(tk.Tk, myo.DeviceListener):
             # Extract quaternion data (x, y, z, w)
             quaternion = [event.orientation.x, event.orientation.y, event.orientation.z, event.orientation.w]
             self.quaternion_buffer.append(quaternion)
-            self.log(f"on_orientation: quaternion={quaternion}")
+            # self.log(f"on_orientation: quaternion={quaternion}")  # Removed: not used in App
 
     def on_imu(self, event):
         # Keep this as a fallback, but quaternions should come through on_orientation
@@ -108,8 +108,8 @@ class App(tk.Tk, myo.DeviceListener):
                 emg_win = np.array(self.emg_buffer[:window_size])
                 quaternion_win = np.array(self.quaternion_buffer[:window_size])
                 emg_proc = preprocess_emg(emg_win)
-                features = extract_all_features(emg_proc, quaternion_win)
-                pred = self.model.predict(features.reshape(1, -1, 1), verbose=0)
+                X_win = np.concatenate([emg_proc, quaternion_win], axis=1)  # shape (window_size, 12)
+                pred = self.model.predict(X_win[np.newaxis, ...], verbose=0)
                 text = self.le.inverse_transform([np.argmax(pred)])[0]
                 self.label.config(text=f"Predicted Text: {text}")
                 self.last_label.config(text=f"Last gesture: {text}")
@@ -291,7 +291,7 @@ class TrainApp(tk.Tk, myo.DeviceListener):
             # Extract orientation data (quaternions)
             orientation = [event.orientation.x, event.orientation.y, event.orientation.z, event.orientation.w]
             self.quaternion_buffer.append(orientation) # Store raw quaternion in quaternion_buffer
-            self.log(f"on_orientation: orientation={orientation}")
+            # self.log(f"on_orientation: orientation={orientation}")  # Removed: not used in App
 
     def on_imu(self, event):
         # Keep this as a fallback, but orientation should come through on_orientation
@@ -306,7 +306,7 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         if self.collecting:
             accel = [event.accelerometer.x, event.accelerometer.y, event.accelerometer.z]
             self.accel_buffer.append(accel)
-            self.log(f"on_imu_data: accel={accel}")
+            # self.log(f"on_imu_data: accel={accel}")  # Removed: accel_data not used
 
     def start_collection(self):
         label = self.current_label.get()
@@ -343,14 +343,14 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         self.plotting = False
         if len(self.emg_buffer) > 0:
             self.data[label].append(np.array(self.emg_buffer))
-            self.accel_data[label].append(np.array(self.accel_buffer))
+            # self.accel_data[label].append(np.array(self.accel_buffer))  # Removed: accel_data not used
             self.quaternion_data[label].append(np.array(self.quaternion_buffer)) # Store quaternion data
             self.collected[label] += 1
             self.status.set(f"Sample {self.collected[label]}/{self.samples_per_class} for {label} collected!")
             # Log summary of accel data
-            self.log(f"Accel data for {label} sample {self.collected[label]}: length={len(self.accel_buffer)}")
-            if len(self.accel_buffer) > 0:
-                self.log(f"First 5 accel samples: {self.accel_buffer[:5]}")
+            # self.log(f"Accel data for {label} sample {self.collected[label]}: length={len(self.accel_buffer)}")
+            # if len(self.accel_buffer) > 0:
+            #     self.log(f"First 5 accel samples: {self.accel_buffer[:5]}")
             # Keep the last sample on the plot
             self._show_last_sample_on_plot(label)
         else:
@@ -365,7 +365,7 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         # Show the last collected sample for this label
         if self.data[label]:
             emg_arr = self.data[label][-1]
-            accel_arr = self.accel_data[label][-1] if self.accel_data[label] else np.zeros((len(emg_arr), 3))
+            # accel_arr = self.accel_data[label][-1] if self.accel_data[label] else np.zeros((len(emg_arr), 3))  # Removed
             quaternion_arr = self.quaternion_data[label][-1] if self.quaternion_data[label] else np.zeros((len(emg_arr), 4))
             window = min(200, len(emg_arr))
             # EMG
@@ -376,14 +376,6 @@ class TrainApp(tk.Tk, myo.DeviceListener):
                 self.axs[0].set_ylim(np.min(emg_arr)-5, np.max(emg_arr)+5)
             else:
                 self.axs[0].set_ylim(-1, 1)
-            # Accel
-            for i, line in enumerate(self.accel_lines):
-                line.set_data(np.arange(window), accel_arr[-window:, i] if accel_arr.shape[0] else np.zeros(window))
-            self.axs[1].set_xlim(0, window)
-            if accel_arr.size:
-                self.axs[1].set_ylim(np.min(accel_arr)-1, np.max(accel_arr)+1)
-            else:
-                self.axs[1].set_ylim(-1, 1)
             # Quaternion (x, y, z, w)
             for i, line in enumerate(self.quaternion_lines):
                 line.set_data(np.arange(window), quaternion_arr[-window:, i] if quaternion_arr.shape[0] else np.zeros(window))
@@ -398,19 +390,19 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         self.log_widget.config(state='disabled')
 
     def save_data(self):
-        # Save all collected EMG and accel data for all labels to a single .npz file
+        # Save all collected EMG and quaternion data for all labels to a single .npz file
         save_dir = os.path.join(os.path.expanduser('~'), 'MyoData')
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, 'myo_training_data.npz')
         save_dict = {}
         for label in self.labels:
             emg_arrs = self.data[label]
-            accel_arrs = self.accel_data[label]
+            # accel_arrs = self.accel_data[label]  # Removed
             quaternion_arrs = self.quaternion_data[label] # Load quaternion data
             if emg_arrs:
                 save_dict[f'{label}_emg'] = np.array(emg_arrs, dtype=object)
-            if accel_arrs:
-                save_dict[f'{label}_accel'] = np.array(accel_arrs, dtype=object)
+            # if accel_arrs:
+            #     save_dict[f'{label}_accel'] = np.array(accel_arrs, dtype=object)
             if quaternion_arrs:
                 save_dict[f'{label}_quaternion'] = np.array(quaternion_arrs, dtype=object) # Save quaternion data
         np.savez(save_path, **save_dict)
@@ -422,38 +414,33 @@ class TrainApp(tk.Tk, myo.DeviceListener):
         try:
             self.log("Starting model training...")
             data = np.load(save_path, allow_pickle=True)
-            all_features, all_labels = [], []
+            all_windows, all_labels = [], []
             for label in self.labels:
                 emg_arrs = data.get(f'{label}_emg', None)
-                accel_arrs = data.get(f'{label}_accel', None)
-                quaternion_arrs = data.get(f'{label}_quaternion', None) # Load quaternion data
-                if emg_arrs is not None and accel_arrs is not None:
-                    for emg, accel in zip(emg_arrs, accel_arrs):
-                        min_len = min(len(emg), len(accel))
+                quaternion_arrs = data.get(f'{label}_quaternion', None)
+                if emg_arrs is not None and quaternion_arrs is not None:
+                    for emg, quaternion in zip(emg_arrs, quaternion_arrs):
+                        min_len = min(len(emg), len(quaternion))
                         window_size = 100
-                        for i in range(0, min_len - window_size, window_size):
+                        for i in range(0, min_len - window_size + 1, window_size):
                             emg_win = emg[i:i+window_size]
-                            accel_win = accel[i:i+window_size]
-                            quaternion_win = quaternion_arrs[i:i+window_size] if quaternion_arrs is not None else np.zeros((window_size, 4))
+                            quaternion_win = quaternion[i:i+window_size]
                             emg_proc = preprocess_emg(emg_win)
-                            features = extract_all_features(emg_proc, accel_win, quaternion_win)
-                            all_features.append(features)
+                            X_win = np.concatenate([emg_proc, quaternion_win], axis=1)  # (window_size, 12)
+                            all_windows.append(X_win)
                             all_labels.append(label)
-            if all_features:
-                X = np.array(all_features)
+            if all_windows:
+                X = np.array(all_windows)  # (num_samples, window_size, 12)
                 model, le = train_model(X, all_labels, all_labels)
-                
                 # Save the model and label encoder for prediction
                 save_dir = os.path.join(os.path.expanduser('~'), 'MyoData')
                 os.makedirs(save_dir, exist_ok=True)
                 model_path = os.path.join(save_dir, 'trained_model.h5')
                 le_path = os.path.join(save_dir, 'label_encoder.pkl')
-                
                 model.save(model_path)
                 import pickle
                 with open(le_path, 'wb') as f:
                     pickle.dump(le, f)
-                
                 self.log("Model training complete! Model and label encoder saved.")
             else:
                 self.log("No data to train model. Training skipped.")
@@ -657,7 +644,7 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
             # Use orientation data (quaternions) instead of raw IMU
             orientation = [event.orientation.x, event.orientation.y, event.orientation.z, event.orientation.w]
             self.quaternion_buffer.append(orientation) # Store raw quaternion in quaternion_buffer
-            self.log(f"on_imu: orientation={orientation}")
+            # self.log(f"on_imu: orientation={orientation}")  # Removed: not used in App
 
     def on_imu_data(self, event):
         now = time.time()
@@ -668,7 +655,7 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         if self.collecting:
             accel = [event.accelerometer.x, event.accelerometer.y, event.accelerometer.z]
             self.accel_buffer.append(accel)
-            self.log(f"on_imu_data: accel={accel}")
+            # self.log(f"on_imu_data: accel={accel}")  # Removed: accel_data not used
 
     def start_collection(self):
         label = self.current_label.get()
@@ -705,14 +692,14 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         self.plotting = False
         if len(self.emg_buffer) > 0:
             self.data[label].append(np.array(self.emg_buffer))
-            self.accel_data[label].append(np.array(self.accel_buffer))
+            # self.accel_data[label].append(np.array(self.accel_buffer))  # Removed: accel_data not used
             self.quaternion_data[label].append(np.array(self.quaternion_buffer)) # Store quaternion data
             self.collected[label] += 1
             self.status.set(f"Sample {self.collected[label]}/{self.samples_per_class} for {label} collected!")
             # Log summary of accel data
-            self.log(f"Accel data for {label} sample {self.collected[label]}: length={len(self.accel_buffer)}")
-            if len(self.accel_buffer) > 0:
-                self.log(f"First 5 accel samples: {self.accel_buffer[:5]}")
+            # self.log(f"Accel data for {label} sample {self.collected[label]}: length={len(self.accel_buffer)}")
+            # if len(self.accel_buffer) > 0:
+            #     self.log(f"First 5 accel samples: {self.accel_buffer[:5]}")
             # Keep the last sample on the plot
             self._show_last_sample_on_plot(label)
         else:
@@ -727,7 +714,7 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         # Show the last collected sample for this label
         if self.data[label]:
             emg_arr = self.data[label][-1]
-            accel_arr = self.accel_data[label][-1] if self.accel_data[label] else np.zeros((len(emg_arr), 3))
+            # accel_arr = self.accel_data[label][-1] if self.accel_data[label] else np.zeros((len(emg_arr), 3))  # Removed
             quaternion_arr = self.quaternion_data[label][-1] if self.quaternion_data[label] else np.zeros((len(emg_arr), 4))
             window = min(200, len(emg_arr))
             # EMG
@@ -738,14 +725,6 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
                 self.axs[0].set_ylim(np.min(emg_arr)-5, np.max(emg_arr)+5)
             else:
                 self.axs[0].set_ylim(-1, 1)
-            # Accel
-            for i, line in enumerate(self.accel_lines):
-                line.set_data(np.arange(window), accel_arr[-window:, i] if accel_arr.shape[0] else np.zeros(window))
-            self.axs[1].set_xlim(0, window)
-            if accel_arr.size:
-                self.axs[1].set_ylim(np.min(accel_arr)-1, np.max(accel_arr)+1)
-            else:
-                self.axs[1].set_ylim(-1, 1)
             # Quaternion (x, y, z, w)
             for i, line in enumerate(self.quaternion_lines):
                 line.set_data(np.arange(window), quaternion_arr[-window:, i] if quaternion_arr.shape[0] else np.zeros(window))
@@ -760,19 +739,19 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         self.log_widget.config(state='disabled')
 
     def save_data(self):
-        # Save all collected EMG and accel data for all labels to a single .npz file
+        # Save all collected EMG and quaternion data for all labels to a single .npz file
         save_dir = os.path.join(os.path.expanduser('~'), 'MyoData')
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, 'myo_training_data.npz')
         save_dict = {}
         for label in self.labels:
             emg_arrs = self.data[label]
-            accel_arrs = self.accel_data[label]
+            # accel_arrs = self.accel_data[label]  # Removed
             quaternion_arrs = self.quaternion_data[label] # Load quaternion data
             if emg_arrs:
                 save_dict[f'{label}_emg'] = np.array(emg_arrs, dtype=object)
-            if accel_arrs:
-                save_dict[f'{label}_accel'] = np.array(accel_arrs, dtype=object)
+            # if accel_arrs:
+            #     save_dict[f'{label}_accel'] = np.array(accel_arrs, dtype=object)
             if quaternion_arrs:
                 save_dict[f'{label}_quaternion'] = np.array(quaternion_arrs, dtype=object) # Save quaternion data
         np.savez(save_path, **save_dict)
@@ -784,38 +763,33 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         try:
             self.log("Starting model training...")
             data = np.load(save_path, allow_pickle=True)
-            all_features, all_labels = [], []
+            all_windows, all_labels = [], []
             for label in self.labels:
                 emg_arrs = data.get(f'{label}_emg', None)
-                accel_arrs = data.get(f'{label}_accel', None)
-                quaternion_arrs = data.get(f'{label}_quaternion', None) # Load quaternion data
-                if emg_arrs is not None and accel_arrs is not None:
-                    for emg, accel in zip(emg_arrs, accel_arrs):
-                        min_len = min(len(emg), len(accel))
+                quaternion_arrs = data.get(f'{label}_quaternion', None)
+                if emg_arrs is not None and quaternion_arrs is not None:
+                    for emg, quaternion in zip(emg_arrs, quaternion_arrs):
+                        min_len = min(len(emg), len(quaternion))
                         window_size = 100
-                        for i in range(0, min_len - window_size, window_size):
+                        for i in range(0, min_len - window_size + 1, window_size):
                             emg_win = emg[i:i+window_size]
-                            accel_win = accel[i:i+window_size]
-                            quaternion_win = quaternion_arrs[i:i+window_size] if quaternion_arrs is not None else np.zeros((window_size, 4))
+                            quaternion_win = quaternion[i:i+window_size]
                             emg_proc = preprocess_emg(emg_win)
-                            features = extract_all_features(emg_proc, accel_win, quaternion_win)
-                            all_features.append(features)
+                            X_win = np.concatenate([emg_proc, quaternion_win], axis=1)  # (window_size, 12)
+                            all_windows.append(X_win)
                             all_labels.append(label)
-            if all_features:
-                X = np.array(all_features)
+            if all_windows:
+                X = np.array(all_windows)  # (num_samples, window_size, 12)
                 model, le = train_model(X, all_labels, all_labels)
-                
                 # Save the model and label encoder for prediction
                 save_dir = os.path.join(os.path.expanduser('~'), 'MyoData')
                 os.makedirs(save_dir, exist_ok=True)
                 model_path = os.path.join(save_dir, 'trained_model.h5')
                 le_path = os.path.join(save_dir, 'label_encoder.pkl')
-                
                 model.save(model_path)
                 import pickle
                 with open(le_path, 'wb') as f:
                     pickle.dump(le, f)
-                
                 self.log("Model training complete! Model and label encoder saved.")
             else:
                 self.log("No data to train model. Training skipped.")
@@ -944,10 +918,10 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
                 
                 # Preprocess and extract features
                 emg_proc = preprocess_emg(emg_win)
-                features = extract_all_features(emg_proc, orientation_win, quaternion_win)
+                features = np.concatenate([emg_proc, orientation_win, quaternion_win], axis=1)  # shape (window_size, 12)
                 
                 # Make prediction
-                pred = self.model.predict(features.reshape(1, -1, 1), verbose=0)
+                pred = self.model.predict(features[np.newaxis, ...], verbose=0)
                 predicted_class = np.argmax(pred)
                 confidence = np.max(pred)
                 predicted_label = self.le.inverse_transform([predicted_class])[0]
