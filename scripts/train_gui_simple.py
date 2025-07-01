@@ -19,7 +19,7 @@ import time
 import pickle
 import json
 import winsound
-from src.preprocessing import preprocess_emg
+from src.preprocessing import preprocess_emg, create_position_focused_sequence
 from src.model import train_model
 from src.utils import get_sdk_path
 import tensorflow as tf
@@ -36,99 +36,37 @@ except ImportError:
 audio_stream = None
 
 def play_square_wave_beep(frequency, duration_ms, volume=0.2):
-    """Play a sine wave beep using sounddevice with improved envelope and audio handling"""
-    global audio_stream
-    
-    if not SOUNDDEVICE_AVAILABLE:
-        return
-    
-    try:
-        # Generate sine wave samples with higher quality
-        sample_rate = 48000  # Higher sample rate for better quality
-        duration_sec = duration_ms / 1000.0
-        num_samples = int(sample_rate * duration_sec)
-        
-        # Add some padding to prevent clipping
-        padding_samples = int(sample_rate * 0.01)  # 10ms padding
-        total_samples = num_samples + padding_samples
-        
-        t = np.linspace(0, duration_sec, num_samples, False)
-        
-        # Create sine wave
-        sine_wave = np.sin(2 * np.pi * frequency * t)
-        
-        # Create smoother envelope with longer transitions
-        # Envelope parameters (as fractions of total duration)
-        attack_time = 0.10  # 15% of duration for attack
-        release_time = 0.20  # 25% of duration for release
-        
-        attack_samples = max(1, int(num_samples * attack_time))
-        release_samples = max(1, int(num_samples * release_time))
-        sustain_samples = num_samples - attack_samples - release_samples
-        
-        # Ensure we have at least some sustain
-        if sustain_samples < 1:
-            # If duration is too short, use shorter attack/release
-            attack_samples = max(1, num_samples // 4)
-            release_samples = max(1, num_samples // 4)
-            sustain_samples = num_samples - attack_samples - release_samples
-        
-        # Create envelope with smoother curves
-        envelope = np.ones(total_samples)  # Include padding in envelope
-        
-        # Attack (fade in) - use smooth linear ramp for volume
-        if attack_samples > 0:
-            # Use a smooth curve that goes from 0 to 1 (not cosine which affects pitch)
-            attack_curve = np.linspace(0, 1, attack_samples)
-            # Apply a slight curve to make it smoother (but not cosine)
-            attack_curve = np.power(attack_curve, 0.5)  # Square root curve for smooth fade
-            envelope[:attack_samples] = attack_curve
-        
-        # Release (fade out) - use smooth linear ramp for volume
-        if release_samples > 0:
-            # Use a smooth curve that goes from 1 to 0
-            release_curve = np.linspace(1, 0, release_samples)
-            # Apply a slight curve to make it smoother
-            release_curve = np.power(release_curve, 0.5)  # Square root curve for smooth fade
-            envelope[num_samples-release_samples:num_samples] = release_curve
-        
-        # Ensure the padding is silent
-        envelope[num_samples:] = 0
-        
-        # Extend sine wave with silence for padding
-        sine_wave_padded = np.zeros(total_samples)
-        sine_wave_padded[:num_samples] = sine_wave
-        
-        # Apply envelope to sine wave
-        audio_data = (sine_wave_padded * envelope * volume).astype(np.float32)
-        
-        # Ensure audio doesn't clip by normalizing if needed
-        max_val = np.max(np.abs(audio_data))
-        if max_val > 0.95:
-            audio_data = audio_data * (0.95 / max_val)
-        
-        # Create or reuse audio stream
-        if audio_stream is None or audio_stream.closed:
-            audio_stream = sd.OutputStream(
-                samplerate=sample_rate,
-                channels=1,
-                dtype=np.float32,
-                blocksize=1024
-            )
-            audio_stream.start()
-        
-        # Play the audio using the persistent stream
-        audio_stream.write(audio_data)
-        
-    except Exception as e:
-        print(f"Error playing sine wave beep: {e}")
-        # Reset stream on error
-        if audio_stream is not None:
-            try:
-                audio_stream.close()
-            except:
-                pass
-            audio_stream = None
+    """Play a bell-like sine wave beep at 25% of previous volume, with a longer sustain and minor attack."""
+    if SOUNDDEVICE_AVAILABLE:
+        try:
+            sample_rate = 48000
+            duration_sec = duration_ms / 1000.0
+            t = np.linspace(0, duration_sec, int(sample_rate * duration_sec), False)
+            wave = np.sin(2 * np.pi * frequency * t)
+            # Envelope: 10ms attack, 70% sustain, 20% release
+            total_samples = len(wave)
+            attack_samples = int(sample_rate * 0.01)  # 10ms
+            sustain_samples = int(total_samples * 0.7)
+            release_samples = total_samples - attack_samples - sustain_samples
+            envelope = np.ones(total_samples)
+            # Attack
+            if attack_samples > 0:
+                envelope[:attack_samples] = np.linspace(0, 1, attack_samples)
+            # Sustain (already 1)
+            # Release
+            if release_samples > 0:
+                envelope[-release_samples:] = np.linspace(1, 0, release_samples)
+            # Apply envelope and hardcode volume to 25%
+            audio_data = (wave * envelope * 0.25).astype(np.float32)
+            sd.play(audio_data, samplerate=sample_rate)
+            sd.wait()
+        except Exception as e:
+            print(f"Error playing bell beep: {e}")
+    else:
+        try:
+            winsound.Beep(int(frequency), int(duration_ms))
+        except Exception as e:
+            print(f"Error with winsound.Beep: {e}")
 
 # Initialize Myo SDK
 sdk_path = get_sdk_path()
@@ -182,9 +120,13 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.prediction_window_size = 400  # 2 seconds at 200Hz
         self.last_prediction_time = 0
         
+        # Prediction configuration
+        self.use_sliding_windows = True  # Enable temporal invariance
+        self.sliding_window_size = 100  # Match training window size
+        self.sliding_window_overlap = 0.5  # 50% overlap (matching training)
+        
         # UI setup
         self._setup_ui()
-        self._setup_plots()
         
         # Start Myo connection
         self._start_myo()
@@ -214,16 +156,59 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.pred_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.pred_frame, text="Prediction")
         
+        # Settings tab
+        self.settings_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.settings_frame, text="Settings")
+        self._setup_settings_ui()
+        
+        # Data Visualizer tab
+        self.visualizer_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.visualizer_frame, text="Data Visualizer")
+        self._setup_visualizer_ui()
+        
+        # Feature Classifier tab
+        self.feature_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.feature_frame, text="Feature Classifier")
+        self._setup_feature_classifier_ui()
+        
         # Setup training UI
         self._setup_training_ui()
         
         # Setup prediction UI
         self._setup_prediction_ui()
         
+    def _setup_settings_ui(self):
+        # Create notebook for settings sections
+        settings_notebook = ttk.Notebook(self.settings_frame)
+        settings_notebook.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # General tab (placeholder)
+        general_frame = ttk.Frame(settings_notebook)
+        settings_notebook.add(general_frame, text="General")
+        ttk.Label(general_frame, text="General settings will go here.").pack(pady=20)
+        
+        # Audio tab
+        audio_frame = ttk.Frame(settings_notebook)
+        settings_notebook.add(audio_frame, text="Audio")
+        ttk.Label(audio_frame, text="Volume:").pack(anchor='w', padx=10, pady=(20, 5))
+        self.volume_var = tk.DoubleVar(value=0.2)
+        def on_volume_change(event=None):
+            self.volume = self.volume_var.get()
+        self.volume_slider = ttk.Scale(audio_frame, from_=0, to=1, orient='horizontal', variable=self.volume_var, command=on_volume_change, length=200)
+        self.volume_slider.pack(anchor='w', padx=10)
+        self.volume = self.volume_var.get()
+        
     def _setup_training_ui(self):
         # Control frame
         control_frame = ttk.Frame(self.train_frame)
         control_frame.pack(fill='x', padx=10, pady=5)
+        
+        # Model selection dropdown
+        ttk.Label(control_frame, text="Model:").pack(side='left', padx=(0, 5))
+        self.dl_model_var = tk.StringVar(value='LSTM')
+        dl_model_options = ['LSTM', 'GRU', 'SimpleRNN', 'Conv1D', 'Dense']
+        dl_model_dropdown = ttk.Combobox(control_frame, textvariable=self.dl_model_var, values=dl_model_options, state='readonly', width=10)
+        dl_model_dropdown.pack(side='left', padx=(0, 10))
         
         # Status
         self.status_var = tk.StringVar(value="Status: Disconnected")
@@ -328,6 +313,13 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.pred_btn = ttk.Button(pred_control_frame, text="Start Prediction", command=self.toggle_prediction)
         self.pred_btn.pack(side='left', padx=5)
         
+        # Sliding window checkbox
+        self.sliding_window_var = tk.BooleanVar(value=self.use_sliding_windows)
+        sliding_window_cb = ttk.Checkbutton(pred_control_frame, text="Sliding Windows", 
+                                          variable=self.sliding_window_var, 
+                                          command=self._toggle_sliding_windows)
+        sliding_window_cb.pack(side='left', padx=10)
+        
         # Prediction result
         self.pred_result_var = tk.StringVar(value="Prediction: None")
         pred_result_label = ttk.Label(pred_control_frame, textvariable=self.pred_result_var, font=('Arial', 14, 'bold'))
@@ -345,33 +337,78 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.pred_log_text = scrolledtext.ScrolledText(pred_log_frame, height=6)
         self.pred_log_text.pack(fill='both', expand=True)
         
-    def _setup_plots(self):
-        # Plot frame
-        plot_frame = ttk.Frame(self)
-        plot_frame.pack(fill='both', expand=True, padx=10, pady=5)
+    def _setup_visualizer_ui(self):
+        # Controls
+        control_frame = ttk.Frame(self.visualizer_frame)
+        control_frame.pack(fill='x', padx=10, pady=5)
+        ttk.Label(control_frame, text="Class:").pack(side='left')
+        self.vis_class_var = tk.StringVar(value=self.labels[0])
+        class_dropdown = ttk.Combobox(control_frame, textvariable=self.vis_class_var, values=self.labels+['IDLE','NOISE'], state='readonly', width=10)
+        class_dropdown.pack(side='left', padx=5)
+        ttk.Label(control_frame, text="Sample index:").pack(side='left', padx=(10,0))
+        self.vis_index_var = tk.IntVar(value=0)
+        index_spin = ttk.Spinbox(control_frame, from_=0, to=59, textvariable=self.vis_index_var, width=5)
+        index_spin.pack(side='left', padx=5)
+        plot_btn = ttk.Button(control_frame, text="Plot Sample", command=self._plot_visualizer_sample)
+        plot_btn.pack(side='left', padx=10)
+        # Figure
+        self.vis_fig, (self.vis_ax_emg, self.vis_ax_quat) = plt.subplots(2, 1, figsize=(8, 5), sharex=True)
+        self.vis_fig.tight_layout(pad=2.0)
+        self.vis_canvas = FigureCanvasTkAgg(self.vis_fig, master=self.visualizer_frame)
+        self.vis_canvas.get_tk_widget().pack(fill='both', expand=True, padx=10, pady=5)
+        # Message label
+        self.vis_msg_var = tk.StringVar(value="")
+        self.vis_msg_label = ttk.Label(self.visualizer_frame, textvariable=self.vis_msg_var, foreground='red')
+        self.vis_msg_label.pack(pady=5)
         
-        # Create subplots
-        self.fig, self.axs = plt.subplots(2, 1, figsize=(12, 8))
-        
-        # EMG plot
-        self.emg_lines = [self.axs[0].plot([], [], label=f'EMG {i+1}')[0] for i in range(8)]
-        self.axs[0].set_ylabel('EMG')
-        self.axs[0].legend(loc='upper right', fontsize=6)
-        self.axs[0].set_title('EMG Data')
-        
-        # Quaternion plot
-        self.quaternion_lines = [self.axs[1].plot([], [], label=comp)[0] for comp in ['X', 'Y', 'Z', 'W']]
-        self.axs[1].set_ylabel('Quaternion')
-        self.axs[1].legend(loc='upper right', fontsize=6)
-        self.axs[1].set_title('Quaternion Data')
-        self.axs[1].set_xlabel('Samples')
-        
-        self.fig.tight_layout()
-        
-        # Canvas
-        self.canvas = FigureCanvasTkAgg(self.fig, plot_frame)
-        self.canvas.draw()
-        self.canvas.get_tk_widget().pack(fill='both', expand=True)
+    def _setup_feature_classifier_ui(self):
+        try:
+            from sklearn.ensemble import RandomForestClassifier
+            from sklearn.neighbors import KNeighborsClassifier
+            from sklearn.svm import SVC
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.neural_network import MLPClassifier
+            from sklearn.metrics import accuracy_score, confusion_matrix, ConfusionMatrixDisplay
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except ImportError:
+            msg = ttk.Label(self.feature_frame, text="scikit-learn is not installed. Please install it to use this feature.", foreground='red')
+            msg.pack(pady=20)
+            return
+        # Controls
+        control_frame = ttk.Frame(self.feature_frame)
+        control_frame.pack(fill='x', padx=10, pady=5)
+        # Classifier selection
+        ttk.Label(control_frame, text="Classifier:").pack(side='left')
+        self.fc_classifier_var = tk.StringVar(value="RandomForest")
+        classifier_options = ["RandomForest", "kNN", "SVM", "LogisticRegression", "MLP"]
+        classifier_dropdown = ttk.Combobox(control_frame, textvariable=self.fc_classifier_var, values=classifier_options, state='readonly', width=18)
+        classifier_dropdown.pack(side='left', padx=5)
+        train_btn = ttk.Button(control_frame, text="Train", command=self._train_feature_classifier)
+        train_btn.pack(side='left', padx=5)
+        ttk.Label(control_frame, text="Class:").pack(side='left', padx=(20,0))
+        self.fc_class_var = tk.StringVar(value=self.labels[0])
+        class_dropdown = ttk.Combobox(control_frame, textvariable=self.fc_class_var, values=self.labels+['IDLE','NOISE'], state='readonly', width=10)
+        class_dropdown.pack(side='left', padx=5)
+        ttk.Label(control_frame, text="Sample index:").pack(side='left', padx=(10,0))
+        self.fc_index_var = tk.IntVar(value=0)
+        index_spin = ttk.Spinbox(control_frame, from_=0, to=59, textvariable=self.fc_index_var, width=5)
+        index_spin.pack(side='left', padx=5)
+        predict_btn = ttk.Button(control_frame, text="Predict Sample", command=self._predict_feature_sample)
+        predict_btn.pack(side='left', padx=10)
+        self.fc_pred_var = tk.StringVar(value="Prediction: N/A")
+        pred_label = ttk.Label(control_frame, textvariable=self.fc_pred_var, font=('Arial', 12, 'bold'))
+        pred_label.pack(side='left', padx=10)
+        # Feature importance/confusion matrix plot
+        self.fc_fig, (self.fc_ax_imp, self.fc_ax_cm) = plt.subplots(1, 2, figsize=(14, 3))
+        self.fc_canvas = FigureCanvasTkAgg(self.fc_fig, master=self.feature_frame)
+        self.fc_canvas.get_tk_widget().pack(fill='both', expand=True, padx=10, pady=5)
+        self.fc_msg_var = tk.StringVar(value="")
+        self.fc_msg_label = ttk.Label(self.feature_frame, textvariable=self.fc_msg_var, foreground='red')
+        self.fc_msg_label.pack(pady=5)
+        self.feature_classifier = None
+        self.feature_names = None
+        self.fc_class_list = self.labels + ['IDLE', 'NOISE']
         
     def _start_myo(self):
         self.hub_thread = threading.Thread(target=self._run_hub, daemon=True)
@@ -492,9 +529,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self._countdown(self.duration_ms // 1000, label)
         
     def _play_start_beep(self):
-        """Play start beep in background thread"""
+        """Play start click in background thread"""
         try:
-            play_square_wave_beep(880, 200, volume=0.1)  # 400Hz, 800ms, very quiet (soothing low tone)
+            self.play_beep(1200, 100)  # Higher frequency, shorter duration for click
         except:
             pass
         
@@ -583,11 +620,11 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.status_var.set("Status: Ready")
         
     def _play_stop_beep(self):
-        """Play stop beep in background thread"""
+        """Play stop clicks in background thread"""
         try:
-            play_square_wave_beep(440, 150, volume=0.1)  
+            self.play_beep(800, 80)  # First click
             time.sleep(0.02)
-            play_square_wave_beep(440, 150, volume=0.1)  
+            self.play_beep(600, 80)  # Second click (lower pitch)
         except:
             pass
         
@@ -681,6 +718,10 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 emg_arrs = self.data[label]
                 quaternion_arrs = self.quaternion_data[label]
                 
+                # Ensure all arrays are float32
+                emg_arrs = [np.array(x, dtype=np.float32) for x in emg_arrs]
+                quaternion_arrs = [np.array(x, dtype=np.float32) for x in quaternion_arrs]
+                
                 self.log(f"   Processing {label}: {len(emg_arrs)} samples")
                 
                 for i, (emg_arr, quaternion_arr) in enumerate(zip(emg_arrs, quaternion_arrs)):
@@ -694,10 +735,10 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                             # Preprocess EMG
                             emg_proc = preprocess_emg(emg_win)
                             
-                            # Concatenate EMG and quaternion for sequence input
+                            # Create position-focused sequence input for LSTM model
                             # Shape: (window_size, 12) - 8 EMG channels + 4 quaternion components
-                            X_win = np.concatenate([emg_proc, quaternion_win], axis=1)
-                            
+                            # Using position emphasis of 0.8 (80% focus on position, 20% on EMG)
+                            X_win = create_position_focused_sequence(emg_proc, quaternion_win, position_emphasis=0.8)
                             all_windows.append(X_win)
                             all_labels.append(label)
             
@@ -705,59 +746,70 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 messagebox.showerror("Error", "No valid training sequences could be extracted!")
                 return
                 
-            # Convert to numpy arrays for sequence model
-            X = np.array(all_windows)  # Shape: (num_samples, window_size, 12)
+            # Convert to numpy arrays for sequence model (force float32)
+            X = np.array(all_windows, dtype=np.float32)  # Shape: (num_samples, window_size, 12)
             y = np.array(all_labels)
             
-            self.log(f"✅ Sequence training data prepared: {X.shape[0]} samples")
-            self.log(f"   Input shape: {X.shape} (samples, window_size, features)")
-            self.log(f"   Window size: {window_size}")
-            self.log(f"   Features per timestep: {X.shape[2]}")
-            self.log(f"   Labels: {np.unique(y)}")
+            # Debug: print dtype and shape
+            self.log(f"DEBUG: X dtype: {X.dtype}, shape: {X.shape}")
+            self.log(f"DEBUG: y dtype: {y.dtype}, shape: {y.shape}")
             
-            # Check class distribution
-            unique_labels, counts = np.unique(y, return_counts=True)
-            self.log(f"📊 Class distribution:")
-            for label, count in zip(unique_labels, counts):
-                self.log(f"   {label}: {count} samples ({count/len(y)*100:.1f}%)")
+            # Label encoding debug
+            self.log(f"DEBUG: Unique labels: {np.unique(y)}")
             
-            # Check for class imbalance
-            min_samples = min(counts)
-            max_samples = max(counts)
-            imbalance_ratio = max_samples / min_samples if min_samples > 0 else float('inf')
-            self.log(f"   Imbalance ratio: {imbalance_ratio:.2f}x (max/min)")
-            
-            if imbalance_ratio > 2.0:
-                self.log(f"⚠️  WARNING: Significant class imbalance detected!")
-                self.log(f"   Consider collecting more samples for underrepresented classes")
-            
-            # Check data quality
-            self.log(f"🔍 Data quality check:")
-            self.log(f"   EMG range: {np.min(X[:, :, :8]):.2f} to {np.max(X[:, :, :8]):.2f}")
-            self.log(f"   Quaternion range: {np.min(X[:, :, 8:]):.2f} to {np.max(X[:, :, 8:]):.2f}")
-            self.log(f"   Any NaN values: {np.any(np.isnan(X))}")
-            self.log(f"   Any infinite values: {np.any(np.isinf(X))}")
+            # Split into train/val (stratified)
+            from sklearn.model_selection import train_test_split
+            X_train, X_val, y_train, y_val = train_test_split(
+                X, y, test_size=0.2, random_state=42, stratify=y)
+            self.log(f"DEBUG: Train shape: {X_train.shape}, Val shape: {X_val.shape}")
+            self.log(f"DEBUG: Train label distribution: {dict(zip(*np.unique(y_train, return_counts=True)))}")
+            self.log(f"DEBUG: Val label distribution: {dict(zip(*np.unique(y_val, return_counts=True)))}")
             
             # Train model
             self.log("🧠 Training LSTM sequence model...")
-            self.model, self.le = train_model(X, y, self.labels)
-            
+            model_type = self.dl_model_var.get() if hasattr(self, 'dl_model_var') else 'LSTM'
+            self.log(f"Training model type: {model_type}")
+            self.model = self.build_model(model_type, X_train.shape[1:], len(np.unique(y_train)))
+            self.le = train_model(X_train, y_train, self.labels)
             self.log("✅ Model training completed!")
             
             # Save model automatically with timestamp
+            import time
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             model_filename = f"myo_model_{timestamp}.h5"
             le_filename = f"myo_model_{timestamp}_labels.pkl"
-            
-            # Save the model
             self.model.save(model_filename)
-            
-            # Save label encoder
+            import pickle
             with open(le_filename, 'wb') as f:
                 pickle.dump(self.le, f)
-                
             self.log(f"💾 Model saved automatically to: {model_filename}")
             self.log(f"💾 Label encoder saved to: {le_filename}")
+            
+            # --- DIAGNOSTICS ---
+            self.log("\n🔬 DIAGNOSTICS:")
+            from sklearn.metrics import confusion_matrix, classification_report
+            # Predict on train and val
+            y_train_pred = np.argmax(self.model.predict(X_train, verbose=0), axis=1)
+            y_val_pred = np.argmax(self.model.predict(X_val, verbose=0), axis=1)
+            # Decode labels if using LabelEncoder
+            if self.le is not None:
+                y_train_true = self.le.transform(y_train)
+                y_val_true = self.le.transform(y_val)
+            else:
+                y_train_true = y_train
+                y_val_true = y_val
+            # Confusion matrix
+            cm = confusion_matrix(y_val_true, y_val_pred)
+            self.log(f"Confusion Matrix (Validation):\n{cm}")
+            # Per-class accuracy
+            class_report = classification_report(y_val_true, y_val_pred, target_names=list(self.le.classes_) if self.le is not None else None)
+            self.log(f"Classification Report (Validation):\n{class_report}")
+            # Print for train set too
+            cm_train = confusion_matrix(y_train_true, y_train_pred)
+            self.log(f"Confusion Matrix (Train):\n{cm_train}")
+            class_report_train = classification_report(y_train_true, y_train_pred, target_names=list(self.le.classes_) if self.le is not None else None)
+            self.log(f"Classification Report (Train):\n{class_report_train}")
+            
             messagebox.showinfo("Success", f"Model trained and saved!\n\nModel: {model_filename}\nLabels: {le_filename}")
             
         except Exception as e:
@@ -802,18 +854,26 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         if not self.predicting:
             self.predicting = True
             self.pred_btn.config(text="Stop Prediction")
-            self.pred_log("Prediction started")
             self.prediction_window_size = 100  # Match training window size
             self.pred_emg_buffer = []
             self.pred_quaternion_buffer = []
             self.last_prediction_time = 0
+            
+            # Log prediction mode
+            mode = "Sliding Windows" if self.use_sliding_windows else "Single Window"
+            self.pred_log(f"Prediction started - Mode: {mode}")
+            if self.use_sliding_windows:
+                self.pred_log(f"  Temporal invariance: Gestures can be recognized at any time in the window")
+                self.pred_log(f"  Window size: {self.sliding_window_size}, Overlap: {self.sliding_window_overlap*100}%")
+            else:
+                self.pred_log(f"  Single window: Gestures must be at the end of the window")
         else:
             self.predicting = False
             self.pred_btn.config(text="Start Prediction")
             self.pred_log("Prediction stopped")
             
     def make_prediction(self):
-        """Make prediction with current data - optimized for GPU performance"""
+        """Make prediction with current data using sliding windows for temporal invariance"""
         if not hasattr(self, 'model') or self.model is None:
             return
             
@@ -838,49 +898,115 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 if len(self.pred_emg_buffer) % 200 == 0:  # Every 200th sample
                     self.pred_log(f"Debug: EMG shape {emg_win.shape}, Quaternion shape {quaternion_win.shape}")
                 
-                # Preprocess EMG
-                emg_proc = preprocess_emg(emg_win)
-                
-                # Create sequence input for LSTM model
-                # Shape: (window_size, 12) - 8 EMG channels + 4 quaternion components
-                X_win = np.concatenate([emg_proc, quaternion_win], axis=1)
-                
-                # Reshape for model input: (1, window_size, 12)
-                X_sequence = X_win.reshape(1, X_win.shape[0], X_win.shape[1])
-                
-                # Debug: log input shape occasionally
-                if len(self.pred_emg_buffer) % 200 == 0:
-                    self.pred_log(f"Debug: Model input shape {X_sequence.shape}")
-                
-                # Make prediction with sequence model
-                pred = self.model.predict(X_sequence, verbose=0, batch_size=1)
-                predicted_class = np.argmax(pred)
-                confidence = np.max(pred)
-                
-                # Debug: log prediction values occasionally
-                if len(self.pred_emg_buffer) % 200 == 0:
-                    self.pred_log(f"Debug: Raw prediction {pred}, class {predicted_class}, confidence {confidence:.3f}")
-                
-                # Safety check for label encoder
-                if self.le is not None:
-                    predicted_label = self.le.inverse_transform([predicted_class])[0]
+                if self.use_sliding_windows:
+                    # SLIDING WINDOW PREDICTION (temporal invariance)
+                    predictions = []
+                    confidences = []
+                    
+                    # Create sliding windows with 50% overlap (matching training)
+                    step_size = int(self.sliding_window_size * (1 - self.sliding_window_overlap))
+                    for j in range(0, len(emg_win) - self.sliding_window_size + 1, step_size):
+                        emg_subwin = emg_win[j:j+self.sliding_window_size]
+                        quaternion_subwin = quaternion_win[j:j+self.sliding_window_size]
+                        
+                        # Preprocess EMG
+                        emg_proc = preprocess_emg(emg_subwin)
+                        
+                        # Create position-focused sequence input for LSTM model
+                        # Shape: (window_size, 12) - 8 EMG channels + 4 quaternion components
+                        # Using position emphasis of 0.8 (80% focus on position, 20% on EMG)
+                        X_subwin = create_position_focused_sequence(emg_proc, quaternion_subwin, position_emphasis=0.8)
+                        
+                        # Reshape for model input: (1, window_size, 12)
+                        X_sequence = X_subwin.reshape(1, X_subwin.shape[0], X_subwin.shape[1])
+                        
+                        # Make prediction for this sub-window
+                        pred = self.model.predict(X_sequence, verbose=0, batch_size=1)
+                        predictions.append(pred[0])  # Store the prediction probabilities
+                        confidences.append(np.max(pred))
+                    
+                    if predictions:
+                        # Aggregate predictions across all sub-windows
+                        # Method 1: Average the prediction probabilities
+                        avg_pred = np.mean(predictions, axis=0)
+                        predicted_class = np.argmax(avg_pred)
+                        confidence = np.max(avg_pred)
+                        
+                        # Method 2: Use the highest confidence prediction
+                        max_conf_idx = np.argmax(confidences)
+                        max_conf_pred = predictions[max_conf_idx]
+                        max_conf_class = np.argmax(max_conf_pred)
+                        max_conf_value = confidences[max_conf_idx]
+                        
+                        # Use the method with higher confidence
+                        if max_conf_value > confidence:
+                            predicted_class = max_conf_class
+                            confidence = max_conf_value
+                        
+                        # Debug: log prediction values occasionally
+                        if len(self.pred_emg_buffer) % 200 == 0:  # Every 200th sample
+                            self.pred_log(f"Debug: Sliding windows: {len(predictions)} windows")
+                            self.pred_log(f"Debug: Avg confidence: {confidence:.3f}, Max confidence: {max_conf_value:.3f}")
+                            self.pred_log(f"Debug: Final class: {predicted_class}")
+                        
+                        # Safety check for label encoder
+                        if self.le is not None:
+                            predicted_label = self.le.inverse_transform([predicted_class])[0]
+                        else:
+                            predicted_label = f"Class_{predicted_class}"
+                        
+                        # Update UI for all predictions (lower threshold with GPU)
+                        if confidence > 0.2:  # Lower threshold for more responsive predictions
+                            # Update UI
+                            self.pred_result_var.set(f"Prediction: {predicted_label}")
+                            self.confidence_var.set(f"Confidence: {confidence:.1%}")
+                            
+                            # Log predictions more frequently
+                            if confidence > 0.5:
+                                self.pred_log(f"Predicted: {predicted_label} (confidence: {confidence:.1%}) [sliding windows: {len(predictions)}]")
+                        else:
+                            # Show low confidence predictions too
+                            self.pred_result_var.set(f"Prediction: {predicted_label}")
+                            self.confidence_var.set(f"Confidence: {confidence:.1%}")
                 else:
-                    predicted_label = f"Class_{predicted_class}"
-                
-                # Update UI for all predictions (lower threshold with GPU)
-                if confidence > 0.2:  # Lower threshold for more responsive predictions
+                    # SINGLE WINDOW PREDICTION (original method - gesture must be at end)
+                    # Use only the latest window_size samples
+                    emg_subwin = emg_win[-self.sliding_window_size:]
+                    quaternion_subwin = quaternion_win[-self.sliding_window_size:]
+                    
+                    # Preprocess EMG
+                    emg_proc = preprocess_emg(emg_subwin)
+                    
+                    # Create position-focused sequence input for LSTM model
+                    # Shape: (window_size, 12) - 8 EMG channels + 4 quaternion components
+                    # Using position emphasis of 0.8 (80% focus on position, 20% on EMG)
+                    X_subwin = create_position_focused_sequence(emg_proc, quaternion_subwin, position_emphasis=0.8)
+                    
+                    # Reshape for model input: (1, window_size, 12)
+                    X_sequence = X_subwin.reshape(1, X_subwin.shape[0], X_subwin.shape[1])
+                    
+                    # Make prediction
+                    pred = self.model.predict(X_sequence, verbose=0, batch_size=1)
+                    predicted_class = np.argmax(pred)
+                    confidence = np.max(pred)
+                    
+                    # Safety check for label encoder
+                    if self.le is not None:
+                        predicted_label = self.le.inverse_transform([predicted_class])[0]
+                    else:
+                        predicted_label = f"Class_{predicted_class}"
+                    
                     # Update UI
-                    self.pred_result_var.set(f"Prediction: {predicted_label}")
-                    self.confidence_var.set(f"Confidence: {confidence:.1%}")
-                    
-                    # Log predictions more frequently
-                    if confidence > 0.5:
-                        self.pred_log(f"Predicted: {predicted_label} (confidence: {confidence:.1%})")
-                else:
-                    # Show low confidence predictions too
-                    self.pred_result_var.set(f"Prediction: {predicted_label}")
-                    self.confidence_var.set(f"Confidence: {confidence:.1%}")
-                    
+                    if confidence > 0.2:
+                        self.pred_result_var.set(f"Prediction: {predicted_label}")
+                        self.confidence_var.set(f"Confidence: {confidence:.1%}")
+                        
+                        if confidence > 0.5:
+                            self.pred_log(f"Predicted: {predicted_label} (confidence: {confidence:.1%}) [single window]")
+                    else:
+                        self.pred_result_var.set(f"Prediction: {predicted_label}")
+                        self.confidence_var.set(f"Confidence: {confidence:.1%}")
+                        
             except Exception as e:
                 # Log prediction errors for debugging
                 self.pred_log(f"Prediction error: {e}")
@@ -960,8 +1086,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                     quaternion_key = f'{label}_quaternion'
                     
                     if emg_key in loaded_data and quaternion_key in loaded_data:
-                        self.data[label] = list(loaded_data[emg_key])
-                        self.quaternion_data[label] = list(loaded_data[quaternion_key])
+                        # Convert to float32 arrays to avoid dtype=object issues
+                        self.data[label] = [np.array(x, dtype=np.float32) for x in loaded_data[emg_key]]
+                        self.quaternion_data[label] = [np.array(x, dtype=np.float32) for x in loaded_data[quaternion_key]]
                         self.collected[label] = len(self.data[label])
                         
                         self.log(f"✅ Loaded {self.collected[label]} samples for {label}")
@@ -1158,6 +1285,180 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                     self.log(f"    {variation}: {count} samples")
             else:
                 self.log(f"  {label}: No samples collected")
+
+    def _toggle_sliding_windows(self):
+        """Toggle sliding windows option"""
+        self.use_sliding_windows = self.sliding_window_var.get()
+        self.log(f"Sliding windows: {'Enabled' if self.use_sliding_windows else 'Disabled'}")
+
+    def play_beep(self, frequency, duration_ms):
+        vol = self.volume_var.get() if hasattr(self, 'volume_var') else 0.2
+        play_square_wave_beep(frequency, duration_ms, volume=vol)
+
+    def _plot_visualizer_sample(self):
+        cls = self.vis_class_var.get()
+        idx = self.vis_index_var.get()
+        # Try to get data
+        emg_data = self.data.get(cls)
+        quat_data = self.quaternion_data.get(cls)
+        if emg_data is None or quat_data is None or len(emg_data)==0 or idx>=len(emg_data):
+            self.vis_msg_var.set(f"No data for class {cls} at index {idx}.")
+            self.vis_ax_emg.clear()
+            self.vis_ax_quat.clear()
+            self.vis_canvas.draw()
+            return
+        self.vis_msg_var.set("")
+        emg = np.array(emg_data[idx], dtype=np.float32)
+        quat = np.array(quat_data[idx], dtype=np.float32)
+        self.vis_ax_emg.clear()
+        for ch in range(emg.shape[1]):
+            self.vis_ax_emg.plot(emg[:,ch], label=f'EMG {ch+1}')
+        self.vis_ax_emg.set_title(f'EMG (Class {cls}, Sample {idx})')
+        self.vis_ax_emg.legend(fontsize=7, ncol=4)
+        self.vis_ax_emg.set_ylabel('EMG')
+        self.vis_ax_quat.clear()
+        for q in range(quat.shape[1]):
+            self.vis_ax_quat.plot(quat[:,q], label=f'Q{q+1}')
+        self.vis_ax_quat.set_title(f'Quaternion (Class {cls}, Sample {idx})')
+        self.vis_ax_quat.legend(fontsize=7, ncol=4)
+        self.vis_ax_quat.set_ylabel('Quaternion')
+        self.vis_ax_quat.set_xlabel('Timestep')
+        self.vis_canvas.draw()
+
+    def extract_features(self, emg, quat):
+        # emg: (100, 8), quat: (100, 4)
+        features = []
+        # EMG features
+        for ch in range(emg.shape[1]):
+            x = emg[:, ch].astype(np.float32)
+            features += [
+                np.mean(x), np.std(x), np.min(x), np.max(x), np.ptp(x),
+                np.sum(np.abs(np.diff(np.sign(x))))  # zero-crossings
+            ]
+        # Quaternion features
+        for q in range(quat.shape[1]):
+            x = quat[:, q].astype(np.float32)
+            features += [
+                np.mean(x), np.std(x), np.min(x), np.max(x), np.ptp(x)
+            ]
+        return np.array(features)
+
+    def _train_feature_classifier(self):
+        try:
+            from sklearn.ensemble import RandomForestClassifier
+            from sklearn.neighbors import KNeighborsClassifier
+            from sklearn.svm import SVC
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.neural_network import MLPClassifier
+            from sklearn.metrics import accuracy_score, confusion_matrix
+        except ImportError:
+            self.fc_msg_var.set("scikit-learn is not installed.")
+            return
+        # Gather features and labels
+        X, y, feature_names = [], [], []
+        class_list = self.fc_class_list
+        for cls in class_list:
+            emg_data = self.data.get(cls)
+            quat_data = self.quaternion_data.get(cls)
+            if emg_data is None or quat_data is None:
+                continue
+            for i in range(len(emg_data)):
+                X.append(self.extract_features(np.array(emg_data[i], dtype=np.float32), np.array(quat_data[i], dtype=np.float32)))
+                y.append(cls)
+        if not X:
+            self.fc_msg_var.set("No data loaded.")
+            return
+        X = np.array(X)
+        y = np.array(y)
+        # Feature names
+        feature_names = []
+        for ch in range(8):
+            feature_names += [f'EMG{ch+1}_mean', f'EMG{ch+1}_std', f'EMG{ch+1}_min', f'EMG{ch+1}_max', f'EMG{ch+1}_range', f'EMG{ch+1}_zcr']
+        for q in range(4):
+            feature_names += [f'Q{q+1}_mean', f'Q{q+1}_std', f'Q{q+1}_min', f'Q{q+1}_max', f'Q{q+1}_range']
+        self.feature_names = feature_names
+        # Train/test split (simple, not stratified)
+        n = len(X)
+        split = int(n * 0.8)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+        # Select classifier
+        clf_name = self.fc_classifier_var.get()
+        if clf_name == "RandomForest":
+            clf = RandomForestClassifier(n_estimators=100, random_state=42)
+        elif clf_name == "kNN":
+            clf = KNeighborsClassifier(n_neighbors=5)
+        elif clf_name == "SVM":
+            clf = SVC(probability=True)
+        elif clf_name == "LogisticRegression":
+            clf = LogisticRegression(max_iter=1000)
+        elif clf_name == "MLP":
+            clf = MLPClassifier(hidden_layer_sizes=(64,32), max_iter=1000)
+        else:
+            self.fc_msg_var.set(f"Unknown classifier: {clf_name}")
+            return
+        clf.fit(X_train, y_train)
+        acc = accuracy_score(y_test, clf.predict(X_test))
+        self.fc_msg_var.set(f"{clf_name} accuracy: {acc*100:.1f}% on holdout set ({len(X_test)} samples)")
+        self.feature_classifier = clf
+        # Plot feature importances if available
+        self.fc_ax_imp.clear()
+        if clf_name == "RandomForest" and hasattr(clf, 'feature_importances_'):
+            importances = clf.feature_importances_
+            idxs = np.argsort(importances)[::-1][:20]  # Top 20
+            self.fc_ax_imp.barh([self.feature_names[i] for i in idxs][::-1], importances[idxs][::-1])
+            self.fc_ax_imp.set_title('Top 20 Feature Importances')
+        elif clf_name == "LogisticRegression" and hasattr(clf, 'coef_'):
+            importances = np.abs(clf.coef_).mean(axis=0)
+            idxs = np.argsort(importances)[::-1][:20]
+            self.fc_ax_imp.barh([self.feature_names[i] for i in idxs][::-1], importances[idxs][::-1])
+            self.fc_ax_imp.set_title('Top 20 Feature Importances')
+        else:
+            self.fc_ax_imp.text(0.5, 0.5, 'No feature importances available', ha='center', va='center')
+            self.fc_ax_imp.set_title('Feature Importances')
+        # Plot confusion matrix
+        from sklearn.metrics import ConfusionMatrixDisplay
+        self.fc_ax_cm.clear()
+        y_pred = clf.predict(X_test)
+        cm = confusion_matrix(y_test, y_pred, labels=class_list)
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_list)
+        disp.plot(ax=self.fc_ax_cm, colorbar=False)
+        self.fc_ax_cm.set_title('Confusion Matrix')
+        self.fc_fig.tight_layout()
+        self.fc_canvas.draw()
+
+    def _predict_feature_sample(self):
+        if self.feature_classifier is None:
+            self.fc_msg_var.set("Train the classifier first.")
+            return
+        cls = self.fc_class_var.get()
+        idx = self.fc_index_var.get()
+        emg_data = self.data.get(cls)
+        quat_data = self.quaternion_data.get(cls)
+        if emg_data is None or quat_data is None or len(emg_data)==0 or idx>=len(emg_data):
+            self.fc_msg_var.set(f"No data for class {cls} at index {idx}.")
+            return
+        feat = self.extract_features(np.array(emg_data[idx], dtype=np.float32), np.array(quat_data[idx], dtype=np.float32)).reshape(1, -1)
+        pred = self.feature_classifier.predict(feat)[0]
+        self.fc_pred_var.set(f"Prediction: {pred}")
+
+    def build_model(self, model_type, input_shape, num_classes):
+        from tensorflow.keras import layers, models
+        model = models.Sequential()
+        if model_type == 'LSTM':
+            model.add(layers.LSTM(64, input_shape=input_shape))
+        elif model_type == 'GRU':
+            model.add(layers.GRU(64, input_shape=input_shape))
+        elif model_type == 'SimpleRNN':
+            model.add(layers.SimpleRNN(64, input_shape=input_shape))
+        elif model_type == 'Conv1D':
+            model.add(layers.Conv1D(32, 3, activation='relu', input_shape=input_shape))
+            model.add(layers.GlobalMaxPooling1D())
+        elif model_type == 'Dense':
+            model.add(layers.Flatten(input_shape=input_shape))
+            model.add(layers.Dense(64, activation='relu'))
+        model.add(layers.Dense(num_classes, activation='softmax'))
+        return model
 
 if __name__ == "__main__":
     print("🚀 Starting Simplified Myo Handwriting Recognition GUI")

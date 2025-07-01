@@ -74,3 +74,59 @@ def extract_all_features(emg_window, quaternion_window):
     emg_feat = extract_emg_features(emg_window)
     quaternion_feat = extract_quaternion_features(quaternion_window)
     return np.concatenate([emg_feat, quaternion_feat])
+
+def create_weighted_sequence(emg_data, quaternion_data, emg_weight=0.3, quaternion_weight=0.7):
+    """
+    Create a weighted combination of EMG and quaternion data for sequence input.
+    
+    Args:
+        emg_data: Preprocessed EMG data (window_size, 8)
+        quaternion_data: Raw quaternion data (window_size, 4)
+        emg_weight: Weight for EMG data (0.0 to 1.0)
+        quaternion_weight: Weight for quaternion data (0.0 to 1.0)
+    
+    Returns:
+        Weighted sequence data (window_size, 12)
+    """
+    if len(emg_data) == 0 or len(quaternion_data) == 0:
+        print("Warning: Empty EMG or quaternion data")
+        return np.zeros((100, 12))  # Default size
+    
+    # Ensure both have the same length
+    min_len = min(len(emg_data), len(quaternion_data))
+    emg_data = emg_data[:min_len]
+    quaternion_data = quaternion_data[:min_len]
+    
+    # Normalize weights to sum to 1
+    total_weight = emg_weight + quaternion_weight
+    emg_weight = emg_weight / total_weight
+    quaternion_weight = quaternion_weight / total_weight
+    
+    # Apply weights to the data
+    weighted_emg = emg_data * emg_weight
+    weighted_quaternion = quaternion_data * quaternion_weight
+    
+    # Concatenate weighted data
+    weighted_sequence = np.concatenate([weighted_emg, weighted_quaternion], axis=1)
+    
+    return weighted_sequence
+
+def create_position_focused_sequence(emg_data, quaternion_data, position_emphasis=0.8):
+    """
+    Create a sequence with emphasis on position data (quaternion).
+    
+    Args:
+        emg_data: Preprocessed EMG data (window_size, 8)
+        quaternion_data: Raw quaternion data (window_size, 4)
+        position_emphasis: How much to emphasize position (0.0 to 1.0)
+                          - 0.0: Equal weighting
+                          - 0.8: Heavy emphasis on position (recommended)
+                          - 1.0: Position only
+    
+    Returns:
+        Position-focused sequence data (window_size, 12)
+    """
+    emg_weight = 1.0 - position_emphasis
+    quaternion_weight = position_emphasis
+    
+    return create_weighted_sequence(emg_data, quaternion_data, emg_weight, quaternion_weight)

@@ -1,0 +1,53 @@
+Old Model sees:
+┌─────────────────┐
+│ Average: 0.5    │ → Predict: "A" (maybe)
+│ Max: 0.8        │
+│ Min: 0.2        │
+└─────────────────┘
+
+LSTM sees:
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│1│2│3│4│5│6│7│8│9│10│ → Time steps
+├─┼─┼─┼─┼─┼─┼─┼─┼─┼─┤
+│↑│↑│↑│→│→│↓│↓│↓│↑│↑│ → Movement pattern
+
+06/27/2025 - I wasn't able to get accurate predictions even after creating and retraining a sequence model. My guess is the EMG signal is being factored in too much. Let's run a script and see what our weights are.
+
+1️⃣ Equal Weighting (Original):
+   EMG range: -39.713 to 36.268
+   Quaternion range: -0.304 to 0.313
+   EMG std: 9.911
+   Quaternion std: 0.102
+
+2️⃣ Position-Focused Weighting (80% position, 20% EMG):
+   EMG range: -7.943 to 7.254
+   Quaternion range: -0.243 to 0.250
+   EMG std: 1.982
+   Quaternion std: 0.081
+
+3️⃣ Custom Weighting (30% EMG, 70% position):
+   EMG range: -11.914 to 10.880
+   Quaternion range: -0.213 to 0.219
+   EMG std: 2.973
+   Quaternion std: 0.071
+
+4️⃣ Position-Only (100% position):
+   EMG range: 0.000 to 0.000
+   Quaternion range: -0.304 to 0.313
+   EMG std: 0.000
+   Quaternion std: 0.102
+
+📊 Summary:
+   • Equal weighting: EMG dominates due to higher variance
+   • Position-focused: Balances the influence, giving more weight to position
+   • Position-only: Completely ignores EMG data
+
+🔍 Understanding the Results
+1️⃣ Equal Weighting (Original)
+EMG range: -39.713 to 36.268 (very wide range)
+Quaternion range: -0.304 to 0.313 (much smaller range)
+EMG std: 9.911 (high variance)
+Quaternion std: 0.102 (low variance)
+Problem: EMG data has 97x higher variance than quaternion data! This means the model was essentially ignoring position data because EMG was dominating the learning process.
+
+Turns out I was right. The EMG data has 97x higher variance than quaternion data! This means the model was essentially ignoring position data because EMG was dominating the learning process.

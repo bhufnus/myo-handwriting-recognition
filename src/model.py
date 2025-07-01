@@ -31,35 +31,81 @@ def train_model(X, y, labels):
     y = le.fit_transform(y)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # LSTM-based sequence model
+    # Simplified LSTM model optimized for position-focused data
     model = Sequential([
         Input(shape=(X.shape[1], X.shape[2])),  # (window_size, 12)
-        LSTM(64, return_sequences=True),
-        LSTM(32),
+        
+        # First LSTM layer - smaller for position data
+        LSTM(64, return_sequences=True, dropout=0.3),
+        BatchNormalization(),
+        
+        # Second LSTM layer - reduced complexity
+        LSTM(32, return_sequences=False, dropout=0.3),
+        BatchNormalization(),
+        
+        # Dense layers with stronger regularization
         Dense(64, activation='relu'),
         Dropout(0.4),
+        BatchNormalization(),
+        
         Dense(32, activation='relu'),
-        Dropout(0.3),
+        Dropout(0.4),
+        BatchNormalization(),
+        
         Dense(len(le.classes_), activation='softmax')
     ])
 
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss='sparse_categorical_crossentropy',
-        metrics=['accuracy']
+    # Use a more conservative optimizer for position-focused data
+    optimizer = tf.keras.optimizers.Adam(
+        learning_rate=0.0005,  # Lower learning rate
+        beta_1=0.9,
+        beta_2=0.999,
+        epsilon=1e-7
     )
 
+    model.compile(
+        optimizer=optimizer,
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy', 'sparse_categorical_accuracy']
+    )
+
+    # More conservative callbacks for position-focused training
     callbacks = [
-        EarlyStopping(patience=10, restore_best_weights=True, verbose=1),
-        ReduceLROnPlateau(factor=0.7, patience=8, min_lr=1e-6, verbose=1)
+        EarlyStopping(
+            monitor='val_accuracy',
+            patience=20,  # More patience
+            restore_best_weights=True,
+            verbose=1
+        ),
+        ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.3,  # More aggressive reduction
+            patience=8,   # Less patience for LR reduction
+            min_lr=1e-6,
+            verbose=1
+        )
     ]
+
+    # Train with class weights to handle imbalance
+    from sklearn.utils.class_weight import compute_class_weight
+    class_weights = compute_class_weight(
+        'balanced',
+        classes=np.unique(y_train),
+        y=y_train
+    )
+    class_weight_dict = dict(zip(np.unique(y_train), class_weights))
+    
+    print(f"Class weights: {class_weight_dict}")
+    print(f"Training with position-focused data (80% position, 20% EMG)")
+    print(f"Model architecture optimized for position data")
 
     history = model.fit(
         X_train, y_train,
-        epochs=150,
+        epochs=200,
         validation_data=(X_test, y_test),
         callbacks=callbacks,
-        batch_size=16,
+        batch_size=16,  # Smaller batch size for better generalization
+        class_weight=class_weight_dict,
         verbose=1
     )
 
