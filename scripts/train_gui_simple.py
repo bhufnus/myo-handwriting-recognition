@@ -343,7 +343,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         control_frame.pack(fill='x', padx=10, pady=5)
         ttk.Label(control_frame, text="Class:").pack(side='left')
         self.vis_class_var = tk.StringVar(value=self.labels[0])
-        class_dropdown = ttk.Combobox(control_frame, textvariable=self.vis_class_var, values=self.labels+['IDLE','NOISE'], state='readonly', width=10)
+        class_dropdown = ttk.Combobox(control_frame, textvariable=self.vis_class_var, values=list(dict.fromkeys(self.labels+['IDLE','NOISE'])), state='readonly', width=10)
         class_dropdown.pack(side='left', padx=5)
         ttk.Label(control_frame, text="Sample index:").pack(side='left', padx=(10,0))
         self.vis_index_var = tk.IntVar(value=0)
@@ -368,9 +368,8 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             from sklearn.svm import SVC
             from sklearn.linear_model import LogisticRegression
             from sklearn.neural_network import MLPClassifier
-            from sklearn.metrics import accuracy_score, confusion_matrix, ConfusionMatrixDisplay
-            import matplotlib.pyplot as plt
-            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from sklearn.metrics import accuracy_score, confusion_matrix
+            from sklearn.model_selection import train_test_split
         except ImportError:
             msg = ttk.Label(self.feature_frame, text="scikit-learn is not installed. Please install it to use this feature.", foreground='red')
             msg.pack(pady=20)
@@ -388,7 +387,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         train_btn.pack(side='left', padx=5)
         ttk.Label(control_frame, text="Class:").pack(side='left', padx=(20,0))
         self.fc_class_var = tk.StringVar(value=self.labels[0])
-        class_dropdown = ttk.Combobox(control_frame, textvariable=self.fc_class_var, values=self.labels+['IDLE','NOISE'], state='readonly', width=10)
+        class_dropdown = ttk.Combobox(control_frame, textvariable=self.fc_class_var, values=list(dict.fromkeys(self.labels+['IDLE','NOISE'])), state='readonly', width=10)
         class_dropdown.pack(side='left', padx=5)
         ttk.Label(control_frame, text="Sample index:").pack(side='left', padx=(10,0))
         self.fc_index_var = tk.IntVar(value=0)
@@ -408,7 +407,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.fc_msg_label.pack(pady=5)
         self.feature_classifier = None
         self.feature_names = None
-        self.fc_class_list = self.labels + ['IDLE', 'NOISE']
+        self.fc_class_list = list(dict.fromkeys(self.labels + ['IDLE', 'NOISE']))
         
     def _start_myo(self):
         self.hub_thread = threading.Thread(target=self._run_hub, daemon=True)
@@ -758,7 +757,6 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             self.log(f"DEBUG: Unique labels: {np.unique(y)}")
             
             # Split into train/val (stratified)
-            from sklearn.model_selection import train_test_split
             X_train, X_val, y_train, y_val = train_test_split(
                 X, y, test_size=0.2, random_state=42, stratify=y)
             self.log(f"DEBUG: Train shape: {X_train.shape}, Val shape: {X_val.shape}")
@@ -1351,6 +1349,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             from sklearn.linear_model import LogisticRegression
             from sklearn.neural_network import MLPClassifier
             from sklearn.metrics import accuracy_score, confusion_matrix
+            from sklearn.model_selection import train_test_split
         except ImportError:
             self.fc_msg_var.set("scikit-learn is not installed.")
             return
@@ -1377,11 +1376,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         for q in range(4):
             feature_names += [f'Q{q+1}_mean', f'Q{q+1}_std', f'Q{q+1}_min', f'Q{q+1}_max', f'Q{q+1}_range']
         self.feature_names = feature_names
-        # Train/test split (simple, not stratified)
-        n = len(X)
-        split = int(n * 0.8)
-        X_train, X_test = X[:split], X[split:]
-        y_train, y_test = y[:split], y[split:]
+        # Stratified train/test split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y)
         # Select classifier
         clf_name = self.fc_classifier_var.get()
         if clf_name == "RandomForest":
