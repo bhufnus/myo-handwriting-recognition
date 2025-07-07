@@ -23,6 +23,7 @@ from src.preprocessing import preprocess_emg, create_position_focused_sequence
 from src.model import train_model
 from src.utils import get_sdk_path
 import tensorflow as tf
+from sklearn.model_selection import train_test_split
 
 # Try to import sounddevice for square wave beeps
 try:
@@ -166,11 +167,6 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.notebook.add(self.visualizer_frame, text="Data Visualizer")
         self._setup_visualizer_ui()
         
-        # Feature Classifier tab
-        self.feature_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.feature_frame, text="Feature Classifier")
-        self._setup_feature_classifier_ui()
-        
         # Setup training UI
         self._setup_training_ui()
         
@@ -199,9 +195,21 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.volume = self.volume_var.get()
         
     def _setup_training_ui(self):
+        # Main vertical frame for training tab
+        main_frame = ttk.Frame(self.train_frame)
+        main_frame.pack(fill='both', expand=True)
+        
+        # Top: controls
+        top_frame = ttk.Frame(main_frame)
+        top_frame.pack(fill='x', padx=10, pady=5)
+        
+        # Bottom: plot
+        self.plot_frame = ttk.Frame(main_frame)
+        self.plot_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
         # Control frame
-        control_frame = ttk.Frame(self.train_frame)
-        control_frame.pack(fill='x', padx=10, pady=5)
+        control_frame = ttk.Frame(top_frame)
+        control_frame.pack(fill='x', padx=5, pady=5)
         
         # Model selection dropdown
         ttk.Label(control_frame, text="Model:").pack(side='left', padx=(0, 5))
@@ -216,8 +224,8 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         status_label.pack(side='left', padx=5)
         
         # Collection controls frame
-        collection_frame = ttk.Frame(control_frame)
-        collection_frame.pack(side='left', padx=20)
+        collection_frame = ttk.Frame(top_frame)
+        collection_frame.pack(fill='x', padx=5, pady=5)
         
         # Class selection dropdown
         ttk.Label(collection_frame, text="Class:").pack(side='left', padx=(0, 5))
@@ -252,26 +260,8 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                                   command=self._undo_last_recording)
         self.undo_btn.pack(side='left', padx=5)
         
-        # Save and Train buttons
-        save_btn = ttk.Button(control_frame, text="Save Data", command=self.save_data)
-        save_btn.pack(side='left', padx=5)
-        
-        load_btn = ttk.Button(control_frame, text="Load Data", command=self.load_data)
-        load_btn.pack(side='left', padx=5)
-        
-        train_btn = ttk.Button(control_frame, text="Train Model", command=self.train_model)
-        train_btn.pack(side='left', padx=5)
-        
-        stats_btn = ttk.Button(control_frame, text="Show Variations", command=self.show_variation_stats)
-        stats_btn.pack(side='left', padx=5)
-        
-        # Progress
-        self.progress_var = tk.StringVar(value="Progress: 0/0")
-        progress_label = ttk.Label(control_frame, textvariable=self.progress_var, font=('Arial', 10))
-        progress_label.pack(side='right', padx=5)
-        
         # Recording indicator and countdown
-        self.recording_frame = ttk.Frame(control_frame)
+        self.recording_frame = ttk.Frame(collection_frame)
         self.recording_frame.pack(side='right', padx=20)
         
         self.recording_indicator = tk.Label(self.recording_frame, text="⏹", font=('Arial', 16), fg='red')
@@ -281,25 +271,71 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.countdown_label = tk.Label(self.recording_frame, textvariable=self.countdown_var, font=('Arial', 14, 'bold'))
         self.countdown_label.pack(side='left', padx=5)
         
+        # Action buttons frame
+        action_frame = ttk.Frame(top_frame)
+        action_frame.pack(fill='x', padx=5, pady=5)
+        
+        # Save and Train buttons
+        save_btn = ttk.Button(action_frame, text="Save Data", command=self.save_data)
+        save_btn.pack(side='left', padx=5)
+        
+        load_btn = ttk.Button(action_frame, text="Load Data", command=self.load_data)
+        load_btn.pack(side='left', padx=5)
+        
+        train_btn = ttk.Button(action_frame, text="Train Model", command=self.train_model)
+        train_btn.pack(side='left', padx=5)
+        
+        stats_btn = ttk.Button(action_frame, text="Show Variations", command=self.show_variation_stats)
+        stats_btn.pack(side='left', padx=5)
+        
+        # Progress
+        self.progress_var = tk.StringVar(value="Progress: 0/0")
+        progress_label = ttk.Label(action_frame, textvariable=self.progress_var, font=('Arial', 10))
+        progress_label.pack(side='right', padx=5)
+        
         # Log frame
-        log_frame = ttk.Frame(self.train_frame)
-        log_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        log_frame = ttk.Frame(top_frame)
+        log_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
         self.log_text = scrolledtext.ScrolledText(log_frame, height=8)
         self.log_text.pack(fill='both', expand=True)
         
         # Reset Data button in bottom right corner
-        reset_frame = ttk.Frame(self.train_frame)
-        reset_frame.pack(fill='x', padx=10, pady=5)
+        reset_frame = ttk.Frame(top_frame)
+        reset_frame.pack(fill='x', padx=5, pady=5)
         
         reset_btn = ttk.Button(reset_frame, text="Reset Data", command=self.reset_data, 
                              style='Danger.TButton')
         reset_btn.pack(side='right', padx=5)
         
+        # Matplotlib live plot in right frame
+        self.fig, self.axs = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+        self.fig.tight_layout(pad=2.0)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_frame)
+        self.canvas.get_tk_widget().pack(fill='both', expand=True)
+        self._init_plot_lines()
+        
+    def _init_plot_lines(self):
+        # EMG: 8 channels
+        self.emg_lines = [self.axs[0].plot([], [], label=f'EMG {i+1}')[0] for i in range(8)]
+        self.axs[0].set_ylabel('EMG')
+        self.axs[0].legend(loc='upper right', fontsize=6)
+        # Quaternion: 4 components (x, y, z, w)
+        self.quaternion_lines = [self.axs[1].plot([], [], label=comp)[0] for comp in ['X', 'Y', 'Z', 'W']]
+        self.axs[1].set_ylabel('Quaternion')
+        self.axs[1].legend(loc='upper right', fontsize=6)
+        self.axs[1].set_xlabel('Samples')
+        self.fig.tight_layout(pad=2.0)
+        
     def _setup_prediction_ui(self):
         # Control frame for prediction
         pred_control_frame = ttk.Frame(self.pred_frame)
         pred_control_frame.pack(fill='x', padx=10, pady=5)
+        
+        # Model toggle
+        self.use_feature_classifier = tk.BooleanVar(value=False)
+        toggle_btn = ttk.Checkbutton(pred_control_frame, text="Use Feature Model", variable=self.use_feature_classifier, onvalue=True, offvalue=False)
+        toggle_btn.pack(side='left', padx=5)
         
         # Load model button
         load_btn = ttk.Button(pred_control_frame, text="Load Model", command=self.load_model)
@@ -338,8 +374,16 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.pred_log_text.pack(fill='both', expand=True)
         
     def _setup_visualizer_ui(self):
-        # Controls
-        control_frame = ttk.Frame(self.visualizer_frame)
+        # Main frame with notebook for different views
+        vis_notebook = ttk.Notebook(self.visualizer_frame)
+        vis_notebook.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        # Data Visualization tab
+        data_vis_frame = ttk.Frame(vis_notebook)
+        vis_notebook.add(data_vis_frame, text="Data Visualization")
+        
+        # Controls for data visualization
+        control_frame = ttk.Frame(data_vis_frame)
         control_frame.pack(fill='x', padx=10, pady=5)
         ttk.Label(control_frame, text="Class:").pack(side='left')
         self.vis_class_var = tk.StringVar(value=self.labels[0])
@@ -351,17 +395,26 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         index_spin.pack(side='left', padx=5)
         plot_btn = ttk.Button(control_frame, text="Plot Sample", command=self._plot_visualizer_sample)
         plot_btn.pack(side='left', padx=10)
-        # Figure
+        
+        # Figure for data visualization
         self.vis_fig, (self.vis_ax_emg, self.vis_ax_quat) = plt.subplots(2, 1, figsize=(8, 5), sharex=True)
         self.vis_fig.tight_layout(pad=2.0)
-        self.vis_canvas = FigureCanvasTkAgg(self.vis_fig, master=self.visualizer_frame)
+        self.vis_canvas = FigureCanvasTkAgg(self.vis_fig, master=data_vis_frame)
         self.vis_canvas.get_tk_widget().pack(fill='both', expand=True, padx=10, pady=5)
-        # Message label
+        
+        # Message label for data visualization
         self.vis_msg_var = tk.StringVar(value="")
-        self.vis_msg_label = ttk.Label(self.visualizer_frame, textvariable=self.vis_msg_var, foreground='red')
+        self.vis_msg_label = ttk.Label(data_vis_frame, textvariable=self.vis_msg_var, foreground='red')
         self.vis_msg_label.pack(pady=5)
         
-    def _setup_feature_classifier_ui(self):
+        # Feature Classifier tab
+        feature_frame = ttk.Frame(vis_notebook)
+        vis_notebook.add(feature_frame, text="Feature Classifier")
+        
+        # Setup feature classifier UI
+        self._setup_feature_classifier_ui_internal(feature_frame)
+        
+    def _setup_feature_classifier_ui_internal(self, parent_frame):
         try:
             from sklearn.ensemble import RandomForestClassifier
             from sklearn.neighbors import KNeighborsClassifier
@@ -371,12 +424,14 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             from sklearn.metrics import accuracy_score, confusion_matrix
             from sklearn.model_selection import train_test_split
         except ImportError:
-            msg = ttk.Label(self.feature_frame, text="scikit-learn is not installed. Please install it to use this feature.", foreground='red')
+            msg = ttk.Label(parent_frame, text="scikit-learn is not installed. Please install it to use this feature.", foreground='red')
             msg.pack(pady=20)
             return
+            
         # Controls
-        control_frame = ttk.Frame(self.feature_frame)
+        control_frame = ttk.Frame(parent_frame)
         control_frame.pack(fill='x', padx=10, pady=5)
+        
         # Classifier selection
         ttk.Label(control_frame, text="Classifier:").pack(side='left')
         self.fc_classifier_var = tk.StringVar(value="RandomForest")
@@ -385,6 +440,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         classifier_dropdown.pack(side='left', padx=5)
         train_btn = ttk.Button(control_frame, text="Train", command=self._train_feature_classifier)
         train_btn.pack(side='left', padx=5)
+        
         ttk.Label(control_frame, text="Class:").pack(side='left', padx=(20,0))
         self.fc_class_var = tk.StringVar(value=self.labels[0])
         class_dropdown = ttk.Combobox(control_frame, textvariable=self.fc_class_var, values=list(dict.fromkeys(self.labels+['IDLE','NOISE'])), state='readonly', width=10)
@@ -398,16 +454,19 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.fc_pred_var = tk.StringVar(value="Prediction: N/A")
         pred_label = ttk.Label(control_frame, textvariable=self.fc_pred_var, font=('Arial', 12, 'bold'))
         pred_label.pack(side='left', padx=10)
+        
         # Feature importance/confusion matrix plot
         self.fc_fig, (self.fc_ax_imp, self.fc_ax_cm) = plt.subplots(1, 2, figsize=(14, 3))
-        self.fc_canvas = FigureCanvasTkAgg(self.fc_fig, master=self.feature_frame)
+        self.fc_canvas = FigureCanvasTkAgg(self.fc_fig, master=parent_frame)
         self.fc_canvas.get_tk_widget().pack(fill='both', expand=True, padx=10, pady=5)
         self.fc_msg_var = tk.StringVar(value="")
-        self.fc_msg_label = ttk.Label(self.feature_frame, textvariable=self.fc_msg_var, foreground='red')
+        self.fc_msg_label = ttk.Label(parent_frame, textvariable=self.fc_msg_var, foreground='red')
         self.fc_msg_label.pack(pady=5)
         self.feature_classifier = None
         self.feature_names = None
         self.fc_class_list = list(dict.fromkeys(self.labels + ['IDLE', 'NOISE']))
+        
+
         
     def _start_myo(self):
         self.hub_thread = threading.Thread(target=self._run_hub, daemon=True)
@@ -767,8 +826,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             self.log("🧠 Training LSTM sequence model...")
             model_type = self.dl_model_var.get() if hasattr(self, 'dl_model_var') else 'LSTM'
             self.log(f"Training model type: {model_type}")
-            self.model = self.build_model(model_type, X_train.shape[1:], len(np.unique(y_train)))
-            self.le = train_model(X_train, y_train, self.labels)
+            self.model, self.le = train_model(X_train, y_train, self.labels)
             self.log("✅ Model training completed!")
             
             # Save model automatically with timestamp
@@ -871,146 +929,56 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             self.pred_log("Prediction stopped")
             
     def make_prediction(self):
-        """Make prediction with current data using sliding windows for temporal invariance"""
-        if not hasattr(self, 'model') or self.model is None:
-            return
-            
-        # Rate limiting - predictions every 1 second (faster with GPU)
-        now = time.time()
-        if now - self.last_prediction_time < 1.0:  # 1 second between predictions
-            return
-        self.last_prediction_time = now
-            
-        if len(self.pred_emg_buffer) >= self.prediction_window_size:
+        min_len = min(len(self.emg_buffer), len(self.quaternion_buffer))
+        window_size = 100
+        if min_len >= window_size:
             try:
-                # Get the latest window of data
-                emg_win = np.array(self.pred_emg_buffer[-self.prediction_window_size:])
-                quaternion_win = np.array(self.pred_quaternion_buffer[-self.prediction_window_size:]) if len(self.pred_quaternion_buffer) >= self.prediction_window_size else np.zeros((self.prediction_window_size, 4))
-                
-                # Ensure both have the same length
-                min_len = min(len(emg_win), len(quaternion_win))
-                emg_win = emg_win[:min_len]
-                quaternion_win = quaternion_win[:min_len]
-                
-                # Debug: log data shapes occasionally
-                if len(self.pred_emg_buffer) % 200 == 0:  # Every 200th sample
-                    self.pred_log(f"Debug: EMG shape {emg_win.shape}, Quaternion shape {quaternion_win.shape}")
-                
-                if self.use_sliding_windows:
-                    # SLIDING WINDOW PREDICTION (temporal invariance)
-                    predictions = []
-                    confidences = []
-                    
-                    # Create sliding windows with 50% overlap (matching training)
-                    step_size = int(self.sliding_window_size * (1 - self.sliding_window_overlap))
-                    for j in range(0, len(emg_win) - self.sliding_window_size + 1, step_size):
-                        emg_subwin = emg_win[j:j+self.sliding_window_size]
-                        quaternion_subwin = quaternion_win[j:j+self.sliding_window_size]
-                        
-                        # Preprocess EMG
-                        emg_proc = preprocess_emg(emg_subwin)
-                        
-                        # Create position-focused sequence input for LSTM model
-                        # Shape: (window_size, 12) - 8 EMG channels + 4 quaternion components
-                        # Using position emphasis of 0.8 (80% focus on position, 20% on EMG)
-                        X_subwin = create_position_focused_sequence(emg_proc, quaternion_subwin, position_emphasis=0.8)
-                        
-                        # Reshape for model input: (1, window_size, 12)
-                        X_sequence = X_subwin.reshape(1, X_subwin.shape[0], X_subwin.shape[1])
-                        
-                        # Make prediction for this sub-window
-                        pred = self.model.predict(X_sequence, verbose=0, batch_size=1)
-                        predictions.append(pred[0])  # Store the prediction probabilities
-                        confidences.append(np.max(pred))
-                    
-                    if predictions:
-                        # Aggregate predictions across all sub-windows
-                        # Method 1: Average the prediction probabilities
-                        avg_pred = np.mean(predictions, axis=0)
-                        predicted_class = np.argmax(avg_pred)
-                        confidence = np.max(avg_pred)
-                        
-                        # Method 2: Use the highest confidence prediction
-                        max_conf_idx = np.argmax(confidences)
-                        max_conf_pred = predictions[max_conf_idx]
-                        max_conf_class = np.argmax(max_conf_pred)
-                        max_conf_value = confidences[max_conf_idx]
-                        
-                        # Use the method with higher confidence
-                        if max_conf_value > confidence:
-                            predicted_class = max_conf_class
-                            confidence = max_conf_value
-                        
-                        # Debug: log prediction values occasionally
-                        if len(self.pred_emg_buffer) % 200 == 0:  # Every 200th sample
-                            self.pred_log(f"Debug: Sliding windows: {len(predictions)} windows")
-                            self.pred_log(f"Debug: Avg confidence: {confidence:.3f}, Max confidence: {max_conf_value:.3f}")
-                            self.pred_log(f"Debug: Final class: {predicted_class}")
-                        
-                        # Safety check for label encoder
-                        if self.le is not None:
-                            predicted_label = self.le.inverse_transform([predicted_class])[0]
-                        else:
-                            predicted_label = f"Class_{predicted_class}"
-                        
-                        # Update UI for all predictions (lower threshold with GPU)
-                        if confidence > 0.2:  # Lower threshold for more responsive predictions
-                            # Update UI
-                            self.pred_result_var.set(f"Prediction: {predicted_label}")
-                            self.confidence_var.set(f"Confidence: {confidence:.1%}")
-                            
-                            # Log predictions more frequently
-                            if confidence > 0.5:
-                                self.pred_log(f"Predicted: {predicted_label} (confidence: {confidence:.1%}) [sliding windows: {len(predictions)}]")
-                        else:
-                            # Show low confidence predictions too
-                            self.pred_result_var.set(f"Prediction: {predicted_label}")
-                            self.confidence_var.set(f"Confidence: {confidence:.1%}")
+                emg_win = np.array(self.emg_buffer[:window_size])
+                quaternion_win = np.array(self.quaternion_buffer[:window_size])
+                if hasattr(self, 'use_feature_classifier') and self.use_feature_classifier.get():
+                    if hasattr(self, 'feature_classifier') and self.feature_classifier is not None:
+                        # Use feature-based classifier
+                        features = self.extract_features(emg_win, quaternion_win).reshape(1, -1)
+                        pred = self.feature_classifier.predict(features)[0]
+                        self.pred_result_var.set(f"Feature Model Prediction: {pred}")
+                        self.label.config(text=f"Feature Model Prediction: {pred}")
+                        self.last_label.config(text=f"Last gesture: {pred}")
+                        self.last_pred = pred
+                        self.last_print_time = time.time()
+                    else:
+                        self.pred_result_var.set("No feature model trained. Train one in the Feature Classifier tab.")
+                        self.label.config(text="No feature model trained. Train one in the Feature Classifier tab.")
+                        self.last_label.config(text="Last gesture: None")
+                        self.last_pred = None
+                        self.last_print_time = time.time()
                 else:
-                    # SINGLE WINDOW PREDICTION (original method - gesture must be at end)
-                    # Use only the latest window_size samples
-                    emg_subwin = emg_win[-self.sliding_window_size:]
-                    quaternion_subwin = quaternion_win[-self.sliding_window_size:]
-                    
-                    # Preprocess EMG
-                    emg_proc = preprocess_emg(emg_subwin)
-                    
-                    # Create position-focused sequence input for LSTM model
-                    # Shape: (window_size, 12) - 8 EMG channels + 4 quaternion components
-                    # Using position emphasis of 0.8 (80% focus on position, 20% on EMG)
-                    X_subwin = create_position_focused_sequence(emg_proc, quaternion_subwin, position_emphasis=0.8)
-                    
-                    # Reshape for model input: (1, window_size, 12)
-                    X_sequence = X_subwin.reshape(1, X_subwin.shape[0], X_subwin.shape[1])
-                    
-                    # Make prediction
-                    pred = self.model.predict(X_sequence, verbose=0, batch_size=1)
-                    predicted_class = np.argmax(pred)
-                    confidence = np.max(pred)
-                    
-                    # Safety check for label encoder
-                    if self.le is not None:
-                        predicted_label = self.le.inverse_transform([predicted_class])[0]
-                    else:
-                        predicted_label = f"Class_{predicted_class}"
-                    
-                    # Update UI
-                    if confidence > 0.2:
-                        self.pred_result_var.set(f"Prediction: {predicted_label}")
-                        self.confidence_var.set(f"Confidence: {confidence:.1%}")
-                        
-                        if confidence > 0.5:
-                            self.pred_log(f"Predicted: {predicted_label} (confidence: {confidence:.1%}) [single window]")
-                    else:
-                        self.pred_result_var.set(f"Prediction: {predicted_label}")
-                        self.confidence_var.set(f"Confidence: {confidence:.1%}")
-                        
+                    if not hasattr(self, 'model') or self.model is None:
+                        self.pred_result_var.set("No deep model loaded. Load a model or use the feature model.")
+                        self.label.config(text="No deep model loaded. Load a model or use the feature model.")
+                        self.last_label.config(text="Last gesture: None")
+                        self.last_pred = None
+                        self.last_print_time = time.time()
+                        return
+                    # Use deep model
+                    emg_proc = preprocess_emg(emg_win)
+                    X_win = np.concatenate([emg_proc, quaternion_win], axis=1)  # shape (window_size, 12)
+                    pred = self.model.predict(X_win[np.newaxis, ...], verbose=0)
+                    text = self.le.inverse_transform([np.argmax(pred)])[0]
+                    self.pred_result_var.set(f"Predicted Text: {text}")
+                    self.label.config(text=f"Predicted Text: {text}")
+                    self.last_label.config(text=f"Last gesture: {text}")
+                    self.last_pred = text
+                    self.last_print_time = time.time()
             except Exception as e:
-                # Log prediction errors for debugging
-                self.pred_log(f"Prediction error: {e}")
-                import traceback
-                self.pred_log(f"Traceback: {traceback.format_exc()}")
-                
+                self.pred_result_var.set("Prediction error!")
+                self.label.config(text="Prediction error!")
+                print(f"Prediction error: {e}")
+        else:
+            self.pred_result_var.set("Not enough data for prediction.")
+            self.label.config(text="Not enough data for prediction.")
+        self.emg_buffer = []
+        self.quaternion_buffer = []
+        
     def pred_log(self, message):
         """Log message to prediction log"""
         timestamp = time.strftime("%H:%M:%S")

@@ -51,3 +51,10 @@ Quaternion std: 0.102 (low variance)
 Problem: EMG data has 97x higher variance than quaternion data! This means the model was essentially ignoring position data because EMG was dominating the learning process.
 
 Turns out I was right. The EMG data has 97x higher variance than quaternion data! This means the model was essentially ignoring position data because EMG was dominating the learning process.
+
+
+
+
+06/30/2025
+
+Lets visualize our data. Built a confusion matrix to compare different learning models. Also displays each models top features. The lack of a strong diagonal on the confusion matrix lead me to the solution of stratified splitting to give me a fair representative evaluation of the models on all classes.

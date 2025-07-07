@@ -11,8 +11,7 @@ A Python project for recognizing handwritten letters (A, B, C) using the Myo arm
 
 ## Usage
 
-- Train model: `python scripts/train.py`
-- Run live prediction: `python scripts/predict.py`
+- Run app: `python scripts/train_gui.py`
 
 ## Structure
 
