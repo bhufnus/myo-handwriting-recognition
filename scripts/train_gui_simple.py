@@ -977,6 +977,21 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                     # Use the first window_size samples (fixed window)
                     emg_win = np.array(self.pred_emg_buffer[:window_size])
                     quaternion_win = np.array(self.pred_quaternion_buffer[:window_size])
+                
+                # Check for movement/activity in the data (temporarily disabled for debugging)
+                emg_variance = np.var(emg_win)
+                quaternion_variance = np.var(quaternion_win)
+                
+                # Debug: log variance values and data characteristics
+                self.pred_log(f"EMG variance: {emg_variance:.2f}, Quaternion variance: {quaternion_variance:.4f}")
+                self.pred_log(f"EMG range: [{np.min(emg_win):.2f}, {np.max(emg_win):.2f}]")
+                self.pred_log(f"Quaternion range: [{np.min(quaternion_win):.4f}, {np.max(quaternion_win):.4f}]")
+                
+                # If data is too static, consider it idle (temporarily disabled)
+                # if emg_variance < 100 and quaternion_variance < 0.01:  # Thresholds for movement detection
+                #     self.pred_result_var.set("Idle (no movement detected)")
+                #     self.pred_indicator.config(text="⏹", fg='gray')
+                #     return
                 if hasattr(self, 'use_feature_classifier') and self.use_feature_classifier.get():
                     if hasattr(self, 'feature_classifier') and self.feature_classifier is not None:
                         # Use feature-based classifier
@@ -1001,17 +1016,39 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                     pred = self.model.predict(X_win[np.newaxis, ...], verbose=0)
                     text = self.le.inverse_transform([np.argmax(pred)])[0]
                     confidence = np.max(pred)
-                    self.pred_result_var.set(f"Predicted Text: {text} (confidence: {confidence:.3f})")
-                    self.last_pred = text
-                    self.last_print_time = time.time()
                     
-                    # Log prediction with timing info
+                    # Debug: show all predictions regardless of confidence
                     current_time = time.strftime("%H:%M:%S")
-                    self.pred_log(f"[{current_time}] Predicted: {text} (confidence: {confidence:.3f})")
+                    self.pred_log(f"[{current_time}] Raw prediction: {text} (confidence: {confidence:.3f})")
                     
-                    # Only log high confidence predictions to reduce spam
-                    if confidence > 0.7:
+                    # Debug: show all class probabilities
+                    self.pred_log(f"All probabilities: A={prediction[0][0]:.3f}, B={prediction[0][1]:.3f}, C={prediction[0][2]:.3f}, IDLE={prediction[0][3]:.3f}, NOISE={prediction[0][4]:.3f}")
+                    
+                    # Debug: show input data characteristics
+                    self.pred_log(f"Input EMG mean: {np.mean(emg_win):.2f}, std: {np.std(emg_win):.2f}")
+                    self.pred_log(f"Input quaternion mean: {np.mean(quaternion_win):.4f}, std: {np.std(quaternion_win):.4f}")
+                    
+                    # Show all predictions but highlight high confidence ones
+                    if confidence > 0.8:
+                        self.pred_result_var.set(f"Predicted: {text} (confidence: {confidence:.3f})")
+                        self.last_pred = text
+                        self.last_print_time = time.time()
                         print(f"High confidence prediction: {text} ({confidence:.3f})")
+                    elif confidence > 0.5:
+                        self.pred_result_var.set(f"Low confidence: {text} ({confidence:.3f})")
+                        self.last_pred = text
+                        print(f"Low confidence prediction: {text} ({confidence:.3f})")
+                    else:
+                        # Show idle state for very low confidence
+                        self.pred_result_var.set("Idle (no clear gesture)")
+                        self.last_pred = None
+                        
+                        # Only log occasionally to avoid spam
+                        if hasattr(self, 'last_idle_log') and time.time() - self.last_idle_log > 5:
+                            self.pred_log(f"[{current_time}] Idle (confidence: {confidence:.3f})")
+                            self.last_idle_log = time.time()
+                        elif not hasattr(self, 'last_idle_log'):
+                            self.last_idle_log = time.time()
                     
                     # Clear prediction indicator
                     self.pred_indicator.config(text="⏹", fg='gray')

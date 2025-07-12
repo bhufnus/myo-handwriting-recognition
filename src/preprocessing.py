@@ -20,8 +20,15 @@ def preprocess_emg(emg_data, fs=200, lowcut=20, highcut=90):
         return emg_data
     b, a = butter_bandpass(lowcut, highcut, fs)
     filtered = filtfilt(b, a, emg_data, axis=0)
-    normalized = (filtered - np.mean(filtered)) / np.std(filtered)
-    return normalized
+    
+    # Handle zero variance case to prevent NaN
+    std_val = np.std(filtered)
+    if std_val < 1e-10:  # Very small standard deviation
+        # Return zeros for static data (idle state)
+        return np.zeros_like(filtered)
+    else:
+        normalized = (filtered - np.mean(filtered)) / std_val
+        return normalized
 
 def extract_emg_features(emg_window):
     """Extract RMS and MAV features from EMG window."""
