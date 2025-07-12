@@ -9,8 +9,10 @@ if __name__ == "__main__":
     print("=" * 50)
     
     try:
-        app = SimpleMyoGUI(labels=['A', 'B', 'C', 'IDLE', 'NOISE'], samples_per_class=60, duration_ms=2000)
+        print("🔍 DEBUG: Creating SimpleMyoGUI instance...")
+        app = SimpleMyoGUI(labels=['A', 'B', 'C', 'IDLE', 'NOISE'], samples_per_class=300, duration_ms=2000)
         print("✅ GUI created successfully")
+        print("🔍 DEBUG: Starting mainloop...")
         app.mainloop()
     except Exception as e:
         print(f"❌ Error starting GUI: {e}")

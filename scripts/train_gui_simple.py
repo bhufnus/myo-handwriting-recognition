@@ -36,8 +36,9 @@ except ImportError:
 # Global audio stream for beeps
 audio_stream = None
 
-def play_square_wave_beep(frequency, duration_ms, volume=0.2):
-    """Play a bell-like sine wave beep at 25% of previous volume, with a longer sustain and minor attack."""
+def play_sine_wave_beep(frequency, duration_ms, volume=0.3):
+    """Play a bell-like sine wave beep with proper volume control."""
+    print(f"🔊 DEBUG: play_sine_wave_beep called - SOUNDDEVICE_AVAILABLE={SOUNDDEVICE_AVAILABLE}")
     if SOUNDDEVICE_AVAILABLE:
         try:
             sample_rate = 48000
@@ -57,24 +58,28 @@ def play_square_wave_beep(frequency, duration_ms, volume=0.2):
             # Release
             if release_samples > 0:
                 envelope[-release_samples:] = np.linspace(1, 0, release_samples)
-            # Apply envelope and hardcode volume to 25%
-            audio_data = (wave * envelope * 0.25).astype(np.float32)
+            # Apply envelope and use the passed volume parameter
+            audio_data = (wave * envelope * volume).astype(np.float32)
+            print(f"🔊 DEBUG: About to play sounddevice audio - shape={audio_data.shape}, max={np.max(audio_data):.3f}")
             sd.play(audio_data, samplerate=sample_rate)
             sd.wait()
+            print("✅ DEBUG: sounddevice play completed")
         except Exception as e:
-            print(f"Error playing bell beep: {e}")
+            print(f"❌ DEBUG: Error playing bell beep: {e}")
     else:
         try:
+            print(f"🔊 DEBUG: Using winsound.Beep({int(frequency)}, {int(duration_ms)})")
             winsound.Beep(int(frequency), int(duration_ms))
+            print("✅ DEBUG: winsound.Beep completed")
         except Exception as e:
-            print(f"Error with winsound.Beep: {e}")
+            print(f"❌ DEBUG: Error with winsound.Beep: {e}")
 
 # Initialize Myo SDK
 sdk_path = get_sdk_path()
 myo.init(sdk_path=sdk_path)
 
 class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
-    def __init__(self, labels=['A', 'B', 'C'], samples_per_class=60, duration_ms=2000):
+    def __init__(self, labels=['A', 'B', 'C'], samples_per_class=300, duration_ms=2000):
         tk.Tk.__init__(self)
         myo.DeviceListener.__init__(self)
         
@@ -187,7 +192,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         audio_frame = ttk.Frame(settings_notebook)
         settings_notebook.add(audio_frame, text="Audio")
         ttk.Label(audio_frame, text="Volume:").pack(anchor='w', padx=10, pady=(20, 5))
-        self.volume_var = tk.DoubleVar(value=0.2)
+        self.volume_var = tk.DoubleVar(value=0.3)
         def on_volume_change(event=None):
             self.volume = self.volume_var.get()
         self.volume_slider = ttk.Scale(audio_frame, from_=0, to=1, orient='horizontal', variable=self.volume_var, command=on_volume_change, length=200)
@@ -242,7 +247,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.variation_dropdown.pack(side='left', padx=(0, 10))
         
         # Class count label
-        self.class_count_var = tk.StringVar(value="(0/60)")
+        self.class_count_var = tk.StringVar(value="(0/300)")
         self.class_count_label = ttk.Label(collection_frame, textvariable=self.class_count_var, 
                                          font=('Arial', 10, 'bold'))
         self.class_count_label.pack(side='left', padx=(0, 10))
@@ -366,6 +371,10 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         confidence_label = ttk.Label(pred_control_frame, textvariable=self.confidence_var, font=('Arial', 12))
         confidence_label.pack(side='left', padx=10)
         
+        # Prediction indicator
+        self.pred_indicator = tk.Label(pred_control_frame, text="⏹", font=('Arial', 16), fg='gray')
+        self.pred_indicator.pack(side='left', padx=10)
+        
         # Prediction log
         pred_log_frame = ttk.Frame(self.pred_frame)
         pred_log_frame.pack(fill='both', expand=True, padx=10, pady=5)
@@ -391,7 +400,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         class_dropdown.pack(side='left', padx=5)
         ttk.Label(control_frame, text="Sample index:").pack(side='left', padx=(10,0))
         self.vis_index_var = tk.IntVar(value=0)
-        index_spin = ttk.Spinbox(control_frame, from_=0, to=59, textvariable=self.vis_index_var, width=5)
+        index_spin = ttk.Spinbox(control_frame, from_=0, to=299, textvariable=self.vis_index_var, width=5)
         index_spin.pack(side='left', padx=5)
         plot_btn = ttk.Button(control_frame, text="Plot Sample", command=self._plot_visualizer_sample)
         plot_btn.pack(side='left', padx=10)
@@ -447,7 +456,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         class_dropdown.pack(side='left', padx=5)
         ttk.Label(control_frame, text="Sample index:").pack(side='left', padx=(10,0))
         self.fc_index_var = tk.IntVar(value=0)
-        index_spin = ttk.Spinbox(control_frame, from_=0, to=59, textvariable=self.fc_index_var, width=5)
+        index_spin = ttk.Spinbox(control_frame, from_=0, to=299, textvariable=self.fc_index_var, width=5)
         index_spin.pack(side='left', padx=5)
         predict_btn = ttk.Button(control_frame, text="Predict Sample", command=self._predict_feature_sample)
         predict_btn.pack(side='left', padx=10)
@@ -506,12 +515,18 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         # Store for prediction if predicting
         if self.predicting:
             self.pred_emg_buffer.append(event.emg)
-            # Keep only last window_size samples for prediction
-            if len(self.pred_emg_buffer) > self.prediction_window_size:
-                self.pred_emg_buffer = self.pred_emg_buffer[-self.prediction_window_size:]
-            # Make prediction much less frequently to reduce CPU usage
-            if len(self.pred_emg_buffer) % 100 == 0:  # Every 100th sample (much less frequent)
-                self.after(50, self.make_prediction)  # Schedule with delay
+            # Keep only last 2 seconds of data (400 samples at 200Hz)
+            if len(self.pred_emg_buffer) > 400:
+                self.pred_emg_buffer = self.pred_emg_buffer[-400:]
+            
+            # Start prediction cycle every 2 seconds
+            if not hasattr(self, 'last_prediction_time'):
+                self.last_prediction_time = 0
+            
+            current_time = time.time()
+            if current_time - self.last_prediction_time >= 2.0:  # Every 2 seconds
+                self.last_prediction_time = current_time
+                self.after(10, self.make_prediction)  # Small delay to avoid blocking
             
     def on_orientation(self, event):
         # Remove throttling for quaternions - let them come at their natural rate
@@ -545,14 +560,18 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             
     def _start_recording(self):
         """Start recording data for the selected class"""
+        print("🔍 DEBUG: _start_recording called")
         if not self.connected:
+            print("❌ DEBUG: Not connected to Myo!")
             messagebox.showerror("Error", "Not connected to Myo!")
             return
             
         if self.collected[self.class_var.get()] >= self.samples_per_class:
+            print("❌ DEBUG: Already collected max samples")
             messagebox.showinfo("Info", f"Already collected {self.samples_per_class} samples for {self.class_var.get()}")
             return
             
+        print("✅ DEBUG: Starting recording process...")
         self.collecting = False  # Don't start collecting yet
         self.collection_emg_buffer = []
         self.collection_quaternion_buffer = []
@@ -563,10 +582,12 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.log(f"Preparing to collect {self.class_var.get()} - recording starts in 1 second")
         
         # Wait 1 second then start recording
+        print("🔍 DEBUG: Scheduling _begin_recording in 1 second...")
         self.after(1000, lambda: self._begin_recording(self.class_var.get()))
         
     def _begin_recording(self, label):
         """Actually start recording data"""
+        print(f"🔍 DEBUG: _begin_recording called for label: {label}")
         self.collecting = True
         
         # Show recording indicator
@@ -578,19 +599,24 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.canvas.draw_idle()  # Use draw_idle instead of draw()
         
         # Play start recording beep in background
+        print("🔍 DEBUG: About to start beep thread...")
         threading.Thread(target=self._play_start_beep, daemon=True).start()
         
         self.status_var.set(f"Recording {label}... Move your arm!")
         self.log(f"Recording started for {label}")
         
         # Start recording countdown
+        print("🔍 DEBUG: Starting countdown...")
         self._countdown(self.duration_ms // 1000, label)
         
     def _play_start_beep(self):
         """Play start click in background thread"""
+        print("🔊 DEBUG: Attempting to play start beep...")
         try:
             self.play_beep(1200, 100)  # Higher frequency, shorter duration for click
-        except:
+            print("✅ DEBUG: Start beep call completed")
+        except Exception as e:
+            print(f"❌ DEBUG: Start beep error: {e}")
             pass
         
     def _countdown(self, seconds, label):
@@ -679,11 +705,14 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         
     def _play_stop_beep(self):
         """Play stop clicks in background thread"""
+        print("🔊 DEBUG: Attempting to play stop beeps...")
         try:
             self.play_beep(800, 80)  # First click
             time.sleep(0.02)
             self.play_beep(600, 80)  # Second click (lower pitch)
-        except:
+            print("✅ DEBUG: Stop beeps call completed")
+        except Exception as e:
+            print(f"❌ DEBUG: Stop beeps error: {e}")
             pass
         
     def _update_live_plot(self):
@@ -929,33 +958,40 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             self.pred_log("Prediction stopped")
             
     def make_prediction(self):
-        min_len = min(len(self.emg_buffer), len(self.quaternion_buffer))
+        # Use prediction buffers instead of display buffers
+        min_len = min(len(self.pred_emg_buffer), len(self.pred_quaternion_buffer))
         window_size = 100
+        
+        # Visual feedback: show prediction is starting
+        self.pred_result_var.set("Analyzing gesture...")
+        self.pred_indicator.config(text="⏺", fg='red')  # Show recording indicator
+        
         if min_len >= window_size:
             try:
-                emg_win = np.array(self.emg_buffer[:window_size])
-                quaternion_win = np.array(self.quaternion_buffer[:window_size])
+                # Implement sliding window prediction
+                if self.use_sliding_windows:
+                    # Use the most recent window_size samples (sliding window)
+                    emg_win = np.array(self.pred_emg_buffer[-window_size:])
+                    quaternion_win = np.array(self.pred_quaternion_buffer[-window_size:])
+                else:
+                    # Use the first window_size samples (fixed window)
+                    emg_win = np.array(self.pred_emg_buffer[:window_size])
+                    quaternion_win = np.array(self.pred_quaternion_buffer[:window_size])
                 if hasattr(self, 'use_feature_classifier') and self.use_feature_classifier.get():
                     if hasattr(self, 'feature_classifier') and self.feature_classifier is not None:
                         # Use feature-based classifier
                         features = self.extract_features(emg_win, quaternion_win).reshape(1, -1)
                         pred = self.feature_classifier.predict(features)[0]
                         self.pred_result_var.set(f"Feature Model Prediction: {pred}")
-                        self.label.config(text=f"Feature Model Prediction: {pred}")
-                        self.last_label.config(text=f"Last gesture: {pred}")
                         self.last_pred = pred
                         self.last_print_time = time.time()
                     else:
                         self.pred_result_var.set("No feature model trained. Train one in the Feature Classifier tab.")
-                        self.label.config(text="No feature model trained. Train one in the Feature Classifier tab.")
-                        self.last_label.config(text="Last gesture: None")
                         self.last_pred = None
                         self.last_print_time = time.time()
                 else:
                     if not hasattr(self, 'model') or self.model is None:
                         self.pred_result_var.set("No deep model loaded. Load a model or use the feature model.")
-                        self.label.config(text="No deep model loaded. Load a model or use the feature model.")
-                        self.last_label.config(text="Last gesture: None")
                         self.last_pred = None
                         self.last_print_time = time.time()
                         return
@@ -964,20 +1000,37 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                     X_win = np.concatenate([emg_proc, quaternion_win], axis=1)  # shape (window_size, 12)
                     pred = self.model.predict(X_win[np.newaxis, ...], verbose=0)
                     text = self.le.inverse_transform([np.argmax(pred)])[0]
-                    self.pred_result_var.set(f"Predicted Text: {text}")
-                    self.label.config(text=f"Predicted Text: {text}")
-                    self.last_label.config(text=f"Last gesture: {text}")
+                    confidence = np.max(pred)
+                    self.pred_result_var.set(f"Predicted Text: {text} (confidence: {confidence:.3f})")
                     self.last_pred = text
                     self.last_print_time = time.time()
+                    
+                    # Log prediction with timing info
+                    current_time = time.strftime("%H:%M:%S")
+                    self.pred_log(f"[{current_time}] Predicted: {text} (confidence: {confidence:.3f})")
+                    
+                    # Only log high confidence predictions to reduce spam
+                    if confidence > 0.7:
+                        print(f"High confidence prediction: {text} ({confidence:.3f})")
+                    
+                    # Clear prediction indicator
+                    self.pred_indicator.config(text="⏹", fg='gray')
             except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                error_msg = f"Prediction error: {e}"
                 self.pred_result_var.set("Prediction error!")
-                self.label.config(text="Prediction error!")
-                print(f"Prediction error: {e}")
+                print(error_msg)
+                print(tb)
+                self.pred_log(error_msg)
+                
+                # Clear prediction indicator
+                self.pred_indicator.config(text="⏹", fg='gray')
         else:
             self.pred_result_var.set("Not enough data for prediction.")
-            self.label.config(text="Not enough data for prediction.")
-        self.emg_buffer = []
-        self.quaternion_buffer = []
+            # Debug: show buffer lengths
+            self.pred_log(f"Buffer lengths - EMG: {len(self.pred_emg_buffer)}, Quaternion: {len(self.pred_quaternion_buffer)}")
+        # Don't clear the prediction buffers - they accumulate data continuously
         
     def pred_log(self, message):
         """Log message to prediction log"""
@@ -1258,8 +1311,19 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.log(f"Sliding windows: {'Enabled' if self.use_sliding_windows else 'Disabled'}")
 
     def play_beep(self, frequency, duration_ms):
-        vol = self.volume_var.get() if hasattr(self, 'volume_var') else 0.2
-        play_square_wave_beep(frequency, duration_ms, volume=vol)
+        # Use winsound instead of sounddevice for more reliable beeps
+        print(f"🔊 DEBUG: play_beep called with freq={frequency}Hz, duration={duration_ms}ms")
+        try:
+            winsound.Beep(int(frequency), int(duration_ms))
+            print("✅ DEBUG: winsound.Beep completed")
+        except Exception as e:
+            print(f"❌ DEBUG: winsound.Beep failed: {e}")
+            # Fallback to sounddevice
+            try:
+                play_sine_wave_beep(frequency, duration_ms, volume=0.8)
+                print("✅ DEBUG: sounddevice fallback completed")
+            except Exception as e2:
+                print(f"❌ DEBUG: sounddevice fallback also failed: {e2}")
 
     def _plot_visualizer_sample(self):
         cls = self.vis_class_var.get()
@@ -1431,7 +1495,7 @@ if __name__ == "__main__":
     print("=" * 50)
     
     try:
-        app = SimpleMyoGUI(labels=['A', 'B', 'C'], samples_per_class=60, duration_ms=2000)
+        app = SimpleMyoGUI(labels=['A', 'B', 'C'], samples_per_class=300, duration_ms=2000)
         print("✅ GUI created successfully")
         app.mainloop()
     except Exception as e:

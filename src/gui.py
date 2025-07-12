@@ -13,6 +13,7 @@ import pickle
 import json
 from .preprocessing import preprocess_emg, extract_emg_features, extract_all_features
 from .model import train_model
+import traceback
 
 # Use the same SDK path as the working test_myo_imu.py
 sdk_path = r"C:\Users\brian\__CODING__\MyoArmband\myo-handwriting-recognition\myo-sdk-win-0.9.0"
@@ -49,7 +50,15 @@ class App(tk.Tk, myo.DeviceListener):
             self.hub_thread.start()
             self.update_progress()
         except Exception as e:
+            tb = traceback.format_exc()
             print(f"Error starting Myo hub: {e}")
+            print(tb)
+            try:
+                from tkinter import messagebox
+                messagebox.showerror("Error", f"Could not start Myo hub:\n{e}\n\n{tb}")
+            except Exception:
+                pass
+            self.destroy()
 
     def _run_hub(self):
         self.hub.run_forever(self)
@@ -107,18 +116,41 @@ class App(tk.Tk, myo.DeviceListener):
             try:
                 emg_win = np.array(self.emg_buffer[:window_size])
                 quaternion_win = np.array(self.quaternion_buffer[:window_size])
+                
+                # Debug: print shapes
+                print(f"EMG shape: {emg_win.shape}, Quaternion shape: {quaternion_win.shape}")
+                
                 emg_proc = preprocess_emg(emg_win)
                 X_win = np.concatenate([emg_proc, quaternion_win], axis=1)  # shape (window_size, 12)
-                pred = self.model.predict(X_win[np.newaxis, ...], verbose=0)
+                
+                # Debug: print processed shape
+                print(f"Processed input shape: {X_win.shape}")
+                print(f"Model expects input shape: {self.model.input_shape}")
+                
+                # Add batch dimension
+                X_win_batch = X_win[np.newaxis, ...]  # shape (1, window_size, 12)
+                print(f"Batch input shape: {X_win_batch.shape}")
+                
+                pred = self.model.predict(X_win_batch, verbose=0)
                 text = self.le.inverse_transform([np.argmax(pred)])[0]
+                confidence = np.max(pred)
+                
                 self.label.config(text=f"Predicted Text: {text}")
                 self.last_label.config(text=f"Last gesture: {text}")
-                print(f"Predicted: {text}")
+                print(f"Predicted: {text} (confidence: {confidence:.3f})")
                 self.last_pred = text
                 self.last_print_time = time.time()
             except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                error_msg = f"Prediction error: {e}\n{tb}"
+                print(error_msg)
                 self.label.config(text="Prediction error!")
-                print(f"Prediction error: {e}")
+                try:
+                    from tkinter import messagebox
+                    messagebox.showerror("Prediction Error", error_msg)
+                except Exception:
+                    pass
         else:
             self.label.config(text="Not enough data for prediction.")
         self.emg_buffer = []

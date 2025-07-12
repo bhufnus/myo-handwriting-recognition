@@ -11,6 +11,7 @@ from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, Flatten, Input, BatchNormalization, LSTM
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from .utils import get_output_dir
+import glob
 
 # GPU Configuration
 gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -31,33 +32,33 @@ def train_model(X, y, labels):
     y = le.fit_transform(y)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Simplified LSTM model optimized for position-focused data
+    # Improved LSTM model for better performance
     model = Sequential([
         Input(shape=(X.shape[1], X.shape[2])),  # (window_size, 12)
         
-        # First LSTM layer - smaller for position data
-        LSTM(64, return_sequences=True, dropout=0.3),
+        # First LSTM layer - increased capacity
+        LSTM(128, return_sequences=True, dropout=0.2),
         BatchNormalization(),
         
-        # Second LSTM layer - reduced complexity
-        LSTM(32, return_sequences=False, dropout=0.3),
+        # Second LSTM layer - more capacity
+        LSTM(64, return_sequences=False, dropout=0.2),
         BatchNormalization(),
         
-        # Dense layers with stronger regularization
+        # Dense layers with moderate regularization
+        Dense(128, activation='relu'),
+        Dropout(0.3),
+        BatchNormalization(),
+        
         Dense(64, activation='relu'),
-        Dropout(0.4),
-        BatchNormalization(),
-        
-        Dense(32, activation='relu'),
-        Dropout(0.4),
+        Dropout(0.3),
         BatchNormalization(),
         
         Dense(len(le.classes_), activation='softmax')
     ])
 
-    # Use a more conservative optimizer for position-focused data
+    # Optimized optimizer for better training
     optimizer = tf.keras.optimizers.Adam(
-        learning_rate=0.0005,  # Lower learning rate
+        learning_rate=0.001,  # Higher learning rate for faster convergence
         beta_1=0.9,
         beta_2=0.999,
         epsilon=1e-7
@@ -69,43 +70,32 @@ def train_model(X, y, labels):
         metrics=['accuracy', 'sparse_categorical_accuracy']
     )
 
-    # More conservative callbacks for position-focused training
+    # Optimized callbacks for better training
     callbacks = [
         EarlyStopping(
             monitor='val_accuracy',
-            patience=20,  # More patience
+            patience=15,  # Reduced patience to stop earlier
             restore_best_weights=True,
             verbose=1
         ),
         ReduceLROnPlateau(
             monitor='val_loss',
-            factor=0.3,  # More aggressive reduction
-            patience=8,   # Less patience for LR reduction
-            min_lr=1e-6,
+            factor=0.5,  # Less aggressive reduction
+            patience=5,   # More responsive LR reduction
+            min_lr=1e-7,
             verbose=1
         )
     ]
 
-    # Train with class weights to handle imbalance
-    from sklearn.utils.class_weight import compute_class_weight
-    class_weights = compute_class_weight(
-        'balanced',
-        classes=np.unique(y_train),
-        y=y_train
-    )
-    class_weight_dict = dict(zip(np.unique(y_train), class_weights))
-    
-    print(f"Class weights: {class_weight_dict}")
-    print(f"Training with position-focused data (80% position, 20% EMG)")
-    print(f"Model architecture optimized for position data")
+    print(f"Training with improved model architecture")
+    print(f"Model capacity increased for better performance")
 
     history = model.fit(
         X_train, y_train,
         epochs=200,
         validation_data=(X_test, y_test),
         callbacks=callbacks,
-        batch_size=16,  # Smaller batch size for better generalization
-        class_weight=class_weight_dict,
+        batch_size=32,  # Larger batch size for better training
         verbose=1
     )
 
@@ -117,25 +107,24 @@ def train_model(X, y, labels):
     return model, le
 
 def load_trained_model():
-    """Load the trained model and LabelEncoder."""
-    output_dir = get_output_dir()
-    model_path = os.path.join(output_dir, "handwriting_model.keras")
-    labels_path = os.path.join(output_dir, "training_labels.npy")
-    
-    try:
-        model = load_model(model_path)
-        print(f"Model loaded from {model_path}")
-    except Exception as e:
-        raise RuntimeError(f"Error loading model: {e}")
-    
-    try:
-        saved_labels = np.load(labels_path)
-        le = LabelEncoder()
-        le.fit(saved_labels)
-        print(f"LabelEncoder initialized with classes: {le.classes_}")
-    except Exception as e:
-        raise RuntimeError(f"Error loading labels: {e}")
-    
+    """Load the most recent trained model and LabelEncoder from the project root directory."""
+    # Search for model and label files in the project root directory
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    model_files = sorted(glob.glob(os.path.join(base_dir, 'myo_model_*.h5')), reverse=True)
+    label_files = sorted(glob.glob(os.path.join(base_dir, 'myo_model_*_labels.pkl')), reverse=True)
+    if not model_files or not label_files:
+        raise FileNotFoundError("No trained model or label encoder found in the project root directory.")
+    model_path = model_files[0]
+    le_path = label_files[0]
+
+    from tensorflow.keras.models import load_model
+    import pickle
+
+    model = load_model(model_path)
+    with open(le_path, "rb") as f:
+        le = pickle.load(f)
+    print(f"Loaded model: {model_path}")
+    print(f"Loaded label encoder: {le_path}")
     return model, le
 
 if __name__ == "__main__":
