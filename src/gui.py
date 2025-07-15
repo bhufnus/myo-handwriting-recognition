@@ -11,13 +11,54 @@ import time
 import os
 import pickle
 import json
-from .preprocessing import preprocess_emg, extract_emg_features, extract_all_features
+from .preprocessing import preprocess_emg, extract_emg_features, extract_all_features, extract_quaternion_only_features
 from .model import train_model
 import traceback
 
 # Use the same SDK path as the working test_myo_imu.py
 sdk_path = r"C:\Users\brian\__CODING__\MyoArmband\myo-handwriting-recognition\myo-sdk-win-0.9.0"
 myo.init(sdk_path=sdk_path)
+
+def load_position_only_model():
+    """Load position-only model and label encoder."""
+    try:
+        model_path = "models/position_only_model.h5"
+        le_path = "models/position_only_label_encoder.pkl"
+        
+        if os.path.exists(model_path) and os.path.exists(le_path):
+            from tensorflow import keras
+            import pickle
+            
+            model = keras.models.load_model(model_path)
+            with open(le_path, 'rb') as f:
+                le = pickle.load(f)
+            
+            return model, le
+        else:
+            return None, None
+    except Exception as e:
+        print(f"Error loading position-only model: {e}")
+        return None, None
+
+def predict_position_only(quaternion_window, model, le):
+    """Make prediction using position-only model."""
+    try:
+        # Extract position-only features
+        features = extract_quaternion_only_features(quaternion_window)
+        
+        # Reshape for model input (add batch dimension)
+        features_batch = features[np.newaxis, ...]
+        
+        # Make prediction
+        pred = model.predict(features_batch, verbose=0)
+        predicted_class = np.argmax(pred)
+        confidence = np.max(pred)
+        predicted_label = le.inverse_transform([predicted_class])[0]
+        
+        return predicted_label, confidence, pred[0]
+    except Exception as e:
+        print(f"Position-only prediction error: {e}")
+        return "ERROR", 0.0, []
 
 class App(tk.Tk, myo.DeviceListener):
     def __init__(self, model, le):
@@ -663,7 +704,7 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         self.connect_var.set(False)
 
     def on_emg(self, event):
-        if self.collecting:
+        if self.collecting or self.predicting:
             self.emg_buffer.append(event.emg)
 
     def on_imu(self, event):
@@ -672,7 +713,7 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
             return
         self.last_imu_time = now
         print("on_imu called")
-        if self.collecting:
+        if self.collecting or self.predicting:
             # Use orientation data (quaternions) instead of raw IMU
             orientation = [event.orientation.x, event.orientation.y, event.orientation.z, event.orientation.w]
             self.quaternion_buffer.append(orientation) # Store raw quaternion in quaternion_buffer
@@ -847,6 +888,14 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         # Prediction controls
         tk.Label(left_frame, text="Prediction Mode", font=("Helvetica", 16), bg="#e6e6e6").pack(pady=10)
         
+        # Model type selection
+        model_frame = tk.Frame(left_frame, bg="#e6e6e6")
+        model_frame.pack(pady=5)
+        tk.Label(model_frame, text="Model Type:", font=("Helvetica", 12), bg="#e6e6e6").pack(side='left')
+        self.model_type = tk.StringVar(value="combined")
+        tk.Radiobutton(model_frame, text="Combined", variable=self.model_type, value="combined", bg="#e6e6e6").pack(side='left')
+        tk.Radiobutton(model_frame, text="Position-Only", variable=self.model_type, value="position_only", bg="#e6e6e6").pack(side='left')
+        
         # Model status
         self.model_status = tk.StringVar(value="No model loaded")
         tk.Label(left_frame, textvariable=self.model_status, font=("Helvetica", 12), bg="#e6e6e6").pack(pady=5)
@@ -880,6 +929,8 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
         # Initialize prediction variables
         self.model = None
         self.le = None
+        self.position_only_model = None
+        self.position_only_le = None
         self.prediction_buffer = []
         self.prediction_window_size = 100
         self.prediction_interval = 1000  # ms
@@ -898,7 +949,7 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
 
     def _load_model(self):
         try:
-            # Try to load the trained model
+            # Load combined model
             model_path = os.path.join(os.path.expanduser('~'), 'MyoData', 'trained_model.h5')
             le_path = os.path.join(os.path.expanduser('~'), 'MyoData', 'label_encoder.pkl')
             
@@ -910,11 +961,22 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
                 with open(le_path, 'rb') as f:
                     self.le = pickle.load(f)
                 
-                self.model_status.set("Model loaded successfully")
-                self.pred_log("Model loaded successfully")
+                self.pred_log("Combined model loaded successfully")
             else:
-                self.model_status.set("No trained model found")
-                self.pred_log("No trained model found. Please train a model first.")
+                self.pred_log("No combined model found")
+            
+            # Load position-only model
+            self.position_only_model, self.position_only_le = load_position_only_model()
+            if self.position_only_model is not None:
+                self.pred_log("Position-only model loaded successfully")
+            else:
+                self.pred_log("No position-only model found")
+            
+            if self.model is not None or self.position_only_model is not None:
+                self.model_status.set("Model(s) loaded successfully")
+            else:
+                self.model_status.set("No models found")
+                self.pred_log("No models found. Please train a model first.")
         except Exception as e:
             self.model_status.set("Error loading model")
             self.pred_log(f"Error loading model: {e}")
@@ -941,32 +1003,57 @@ class UnifiedApp(tk.Tk, myo.DeviceListener):
             self.after(self.prediction_interval, self._start_prediction_loop)
 
     def _make_prediction(self):
+        # Debug: log buffer lengths
+        self.pred_log(f"Buffer lengths - EMG: {len(self.emg_buffer)}, Quaternion: {len(self.quaternion_buffer)}")
+        
         if len(self.emg_buffer) >= self.prediction_window_size:
             try:
                 # Get the latest window of data
                 emg_win = np.array(self.emg_buffer[-self.prediction_window_size:])
                 orientation_win = np.array(self.accel_buffer[-self.prediction_window_size:]) if len(self.accel_buffer) >= self.prediction_window_size else np.zeros((self.prediction_window_size, 3))
-                quaternion_win = np.array(self.gyro_buffer[-self.prediction_window_size:]) if len(self.gyro_buffer) >= self.prediction_window_size else np.zeros((self.prediction_window_size, 4))
+                quaternion_win = np.array(self.quaternion_buffer[-self.prediction_window_size:]) if len(self.quaternion_buffer) >= self.prediction_window_size else np.zeros((self.prediction_window_size, 4))
                 
-                # Preprocess and extract features
-                emg_proc = preprocess_emg(emg_win)
-                features = np.concatenate([emg_proc, orientation_win, quaternion_win], axis=1)  # shape (window_size, 12)
+                self.pred_log(f"Data shapes - EMG: {emg_win.shape}, Quaternion: {quaternion_win.shape}")
                 
-                # Make prediction
-                pred = self.model.predict(features[np.newaxis, ...], verbose=0)
-                predicted_class = np.argmax(pred)
-                confidence = np.max(pred)
-                predicted_label = self.le.inverse_transform([predicted_class])[0]
+                model_type = self.model_type.get()
                 
-                # Update UI
-                self.pred_label.config(text=f"Predicted: {predicted_label}")
-                self.confidence_label.config(text=f"Confidence: {confidence:.2f}")
-                
-                if confidence > 0.5:  # Only log high confidence predictions
-                    self.pred_log(f"Predicted: {predicted_label} (confidence: {confidence:.2f})")
+                if model_type == "position_only" and self.position_only_model is not None:
+                    # Use position-only model
+                    predicted_label, confidence, probabilities = predict_position_only(quaternion_win, self.position_only_model, self.position_only_le)
+                    
+                    if predicted_label != "ERROR":
+                        self.pred_label.config(text=f"Predicted: {predicted_label}")
+                        self.confidence_label.config(text=f"Confidence: {confidence:.2f}")
+                        
+                        if confidence > 0.5:  # Only log high confidence predictions
+                            self.pred_log(f"[Position-Only] Predicted: {predicted_label} (confidence: {confidence:.2f})")
+                    else:
+                        self.pred_log("Position-only prediction error")
+                        
+                elif model_type == "combined" and self.model is not None:
+                    # Use combined model
+                    emg_proc = preprocess_emg(emg_win)
+                    features = np.concatenate([emg_proc, orientation_win, quaternion_win], axis=1)  # shape (window_size, 12)
+                    
+                    # Make prediction
+                    pred = self.model.predict(features[np.newaxis, ...], verbose=0)
+                    predicted_class = np.argmax(pred)
+                    confidence = np.max(pred)
+                    predicted_label = self.le.inverse_transform([predicted_class])[0]
+                    
+                    # Update UI
+                    self.pred_label.config(text=f"Predicted: {predicted_label}")
+                    self.confidence_label.config(text=f"Confidence: {confidence:.2f}")
+                    
+                    if confidence > 0.5:  # Only log high confidence predictions
+                        self.pred_log(f"[Combined] Predicted: {predicted_label} (confidence: {confidence:.2f})")
+                else:
+                    self.pred_log(f"No {model_type} model available")
                     
             except Exception as e:
                 self.pred_log(f"Prediction error: {e}")
+        else:
+            self.pred_log(f"Not enough data for prediction. Need {self.prediction_window_size}, have {len(self.emg_buffer)}")
 
     def _update_prediction_plot(self):
         window = 200

@@ -337,10 +337,15 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         pred_control_frame = ttk.Frame(self.pred_frame)
         pred_control_frame.pack(fill='x', padx=10, pady=5)
         
-        # Model toggle
+        # Model toggles
         self.use_feature_classifier = tk.BooleanVar(value=False)
-        toggle_btn = ttk.Checkbutton(pred_control_frame, text="Use Feature Model", variable=self.use_feature_classifier, onvalue=True, offvalue=False)
-        toggle_btn.pack(side='left', padx=5)
+        feature_toggle_btn = ttk.Checkbutton(pred_control_frame, text="Use Feature Model", variable=self.use_feature_classifier, onvalue=True, offvalue=False)
+        feature_toggle_btn.pack(side='left', padx=5)
+        
+        # Position-only toggle
+        self.use_position_only = tk.BooleanVar(value=False)
+        position_toggle_btn = ttk.Checkbutton(pred_control_frame, text="Position-Only Model", variable=self.use_position_only, onvalue=True, offvalue=False)
+        position_toggle_btn.pack(side='left', padx=5)
         
         # Load model button
         load_btn = ttk.Button(pred_control_frame, text="Load Model", command=self.load_model)
@@ -519,15 +524,6 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             if len(self.pred_emg_buffer) > 400:
                 self.pred_emg_buffer = self.pred_emg_buffer[-400:]
             
-            # Start prediction cycle every 2 seconds
-            if not hasattr(self, 'last_prediction_time'):
-                self.last_prediction_time = 0
-            
-            current_time = time.time()
-            if current_time - self.last_prediction_time >= 2.0:  # Every 2 seconds
-                self.last_prediction_time = current_time
-                self.after(10, self.make_prediction)  # Small delay to avoid blocking
-            
     def on_orientation(self, event):
         # Remove throttling for quaternions - let them come at their natural rate
         # now = time.time()
@@ -554,9 +550,9 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         # Store for prediction if predicting
         if self.predicting:
             self.pred_quaternion_buffer.append(quaternion)
-            # Keep only last window_size samples for prediction
-            if len(self.pred_quaternion_buffer) > self.prediction_window_size:
-                self.pred_quaternion_buffer = self.pred_quaternion_buffer[-self.prediction_window_size:]
+            # Keep only last 2 seconds of data (400 samples at 200Hz)
+            if len(self.pred_quaternion_buffer) > 400:
+                self.pred_quaternion_buffer = self.pred_quaternion_buffer[-400:]
             
     def _start_recording(self):
         """Start recording data for the selected class"""
@@ -918,6 +914,16 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 expected_shape = self.model.input_shape
                 self.pred_log(f"Model expects input shape: {expected_shape}")
                 
+                # Detect model type based on input shape
+                if expected_shape[2] == 4:  # Position-only model (quaternion only)
+                    self.use_position_only.set(True)
+                    self.pred_log("Detected position-only model - enabling position-only mode")
+                elif expected_shape[2] == 12:  # Full model (EMG + quaternion)
+                    self.use_position_only.set(False)
+                    self.pred_log("Detected full model - using EMG + quaternion mode")
+                else:
+                    self.pred_log(f"Warning: Unknown model input shape: {expected_shape}")
+                
                 # Load label encoder
                 le_filename = model_filename.replace('.h5', '_labels.pkl')
                 with open(le_filename, 'rb') as f:
@@ -925,6 +931,10 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                     
                 self.pred_log(f"Model loaded from {model_filename}")
                 self.pred_log(f"Labels: {list(self.le.classes_)}")
+                
+                # Show model type in UI
+                model_type = "Position-Only" if self.use_position_only.get() else "Full (EMG+Quaternion)"
+                self.pred_log(f"Model type: {model_type}")
                 
         except Exception as e:
             self.pred_log(f"Load error: {e}")
@@ -952,10 +962,24 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 self.pred_log(f"  Window size: {self.sliding_window_size}, Overlap: {self.sliding_window_overlap*100}%")
             else:
                 self.pred_log(f"  Single window: Gestures must be at the end of the window")
+            
+            # Start prediction loop
+            self._start_prediction_loop()
         else:
             self.predicting = False
             self.pred_btn.config(text="Start Prediction")
             self.pred_log("Prediction stopped")
+    
+    def _start_prediction_loop(self):
+        """Start the prediction loop"""
+        if self.predicting:
+            # Check if we have enough data for prediction
+            min_len = min(len(self.pred_emg_buffer), len(self.pred_quaternion_buffer))
+            if min_len >= 100:  # Need at least 100 samples
+                self.make_prediction()
+            
+            # Schedule next prediction in 2 seconds
+            self.after(2000, self._start_prediction_loop)
             
     def make_prediction(self):
         # Use prediction buffers instead of display buffers
@@ -966,6 +990,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.pred_result_var.set("Analyzing gesture...")
         self.pred_indicator.config(text="⏺", fg='red')  # Show recording indicator
         
+        # Check if we have enough data for prediction
         if min_len >= window_size:
             try:
                 # Implement sliding window prediction
@@ -1010,31 +1035,54 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                         self.last_pred = None
                         self.last_print_time = time.time()
                         return
-                    # Use deep model
-                    emg_proc = preprocess_emg(emg_win)
-                    X_win = np.concatenate([emg_proc, quaternion_win], axis=1)  # shape (window_size, 12)
-                    pred = self.model.predict(X_win[np.newaxis, ...], verbose=0)
-                    text = self.le.inverse_transform([np.argmax(pred)])[0]
-                    confidence = np.max(pred)
+                    # Check if we have a position-only model
+                    if hasattr(self, 'use_position_only') and self.use_position_only.get():
+                        # Use position-only model (quaternion only)
+                        from src.position_only_model import predict_position_only
+                        try:
+                            text, confidence, pred = predict_position_only(quaternion_win, self.model, self.le)
+                        except Exception as e:
+                            self.pred_log(f"Position-only prediction error: {e}")
+                            return
+                    else:
+                        # Use deep model (EMG + quaternion)
+                        emg_proc = preprocess_emg(emg_win)
+                        X_win = np.concatenate([emg_proc, quaternion_win], axis=1)  # shape (window_size, 12)
+                        pred = self.model.predict(X_win[np.newaxis, ...], verbose=0)
+                        text = self.le.inverse_transform([np.argmax(pred)])[0]
+                        confidence = np.max(pred)
                     
                     # Debug: show all predictions regardless of confidence
                     current_time = time.strftime("%H:%M:%S")
                     self.pred_log(f"[{current_time}] Raw prediction: {text} (confidence: {confidence:.3f})")
                     
                     # Debug: show all class probabilities
-                    self.pred_log(f"All probabilities: A={prediction[0][0]:.3f}, B={prediction[0][1]:.3f}, C={prediction[0][2]:.3f}, IDLE={prediction[0][3]:.3f}, NOISE={prediction[0][4]:.3f}")
+                    self.pred_log(f"All probabilities: A={pred[0][0]:.3f}, B={pred[0][1]:.3f}, C={pred[0][2]:.3f}, IDLE={pred[0][3]:.3f}, NOISE={pred[0][4]:.3f}")
                     
                     # Debug: show input data characteristics
                     self.pred_log(f"Input EMG mean: {np.mean(emg_win):.2f}, std: {np.std(emg_win):.2f}")
                     self.pred_log(f"Input quaternion mean: {np.mean(quaternion_win):.4f}, std: {np.std(quaternion_win):.4f}")
                     
-                    # Show all predictions but highlight high confidence ones
-                    if confidence > 0.8:
+                    # Improved idle detection based on EMG and quaternion characteristics
+                    emg_variance = np.var(emg_win)
+                    quaternion_variance = np.var(quaternion_win)
+                    
+                    # Check if this looks like idle (high EMG variance but low quaternion variance)
+                    is_likely_idle = (emg_variance > 50 and emg_variance < 150 and 
+                                    quaternion_variance < 0.5 and confidence < 0.7)
+                    
+                    if is_likely_idle:
+                        self.pred_result_var.set("Idle (natural muscle activity)")
+                        self.last_pred = None
+                        if not hasattr(self, 'last_idle_log') or time.time() - self.last_idle_log > 5:
+                            self.pred_log(f"[{current_time}] Idle detected (EMG: {emg_variance:.1f}, Quat: {quaternion_variance:.4f})")
+                            self.last_idle_log = time.time()
+                    elif confidence > 0.8:
                         self.pred_result_var.set(f"Predicted: {text} (confidence: {confidence:.3f})")
                         self.last_pred = text
                         self.last_print_time = time.time()
                         print(f"High confidence prediction: {text} ({confidence:.3f})")
-                    elif confidence > 0.5:
+                    elif confidence > 0.6:
                         self.pred_result_var.set(f"Low confidence: {text} ({confidence:.3f})")
                         self.last_pred = text
                         print(f"Low confidence prediction: {text} ({confidence:.3f})")
@@ -1067,6 +1115,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             self.pred_result_var.set("Not enough data for prediction.")
             # Debug: show buffer lengths
             self.pred_log(f"Buffer lengths - EMG: {len(self.pred_emg_buffer)}, Quaternion: {len(self.pred_quaternion_buffer)}")
+            self.pred_log(f"Need at least {window_size} samples, have {min_len}")
         # Don't clear the prediction buffers - they accumulate data continuously
         
     def pred_log(self, message):
