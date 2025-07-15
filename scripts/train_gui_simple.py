@@ -1057,7 +1057,7 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                     self.pred_log(f"[{current_time}] Raw prediction: {text} (confidence: {confidence:.3f})")
                     
                     # Debug: show all class probabilities
-                    self.pred_log(f"All probabilities: A={pred[0][0]:.3f}, B={pred[0][1]:.3f}, C={pred[0][2]:.3f}, IDLE={pred[0][3]:.3f}, NOISE={pred[0][4]:.3f}")
+                    self.pred_log(f"All probabilities: A={pred[0]:.3f}, B={pred[1]:.3f}, C={pred[2]:.3f}, IDLE={pred[3]:.3f}, NOISE={pred[4]:.3f}")
                     
                     # Debug: show input data characteristics
                     self.pred_log(f"Input EMG mean: {np.mean(emg_win):.2f}, std: {np.std(emg_win):.2f}")

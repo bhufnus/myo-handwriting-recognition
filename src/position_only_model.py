@@ -41,7 +41,7 @@ def create_position_only_model(input_shape, num_classes):
 
 def preprocess_quaternion_only(quaternion_data):
     """Preprocess quaternion data for position-only model."""
-    if len(quaternion_data) == 0:
+    if quaternion_data is None or not hasattr(quaternion_data, '__len__') or len(quaternion_data) == 0:
         return np.zeros((100, 4))
     
     # Convert to numpy array
@@ -198,10 +198,15 @@ def predict_position_only(quaternion_data, model, le):
     
     # Make prediction
     prediction = model.predict(X_input, verbose=0)
+    print("DEBUG: prediction shape:", getattr(prediction, 'shape', None), "prediction:", prediction)
+    # Ensure prediction is always 2D
+    if np.isscalar(prediction):
+        prediction = np.array([[prediction]])
+    elif prediction.ndim == 1:
+        prediction = prediction[np.newaxis, :]
     predicted_class = np.argmax(prediction)
     confidence = np.max(prediction)
     predicted_label = le.inverse_transform([predicted_class])[0]
-    
     return predicted_label, confidence, prediction[0]
 
 # Test function
