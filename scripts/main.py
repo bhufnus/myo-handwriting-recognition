@@ -17,7 +17,6 @@ import myo
 import threading
 import time
 import pickle
-import json
 import winsound
 from src.preprocessing import preprocess_emg, create_position_focused_sequence
 from src.model import train_model
@@ -1581,7 +1580,7 @@ if __name__ == "__main__":
     print("=" * 50)
     
     try:
-        app = SimpleMyoGUI(labels=['A', 'B', 'C'], samples_per_class=300, duration_ms=2000)
+        app = SimpleMyoGUI(labels=['A', 'B', 'C', 'IDLE', 'NOISE'], samples_per_class=300, duration_ms=2000)
         print("✅ GUI created successfully")
         app.mainloop()
     except Exception as e:
