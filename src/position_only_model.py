@@ -47,6 +47,15 @@ def preprocess_quaternion_only(quaternion_data):
     # Convert to numpy array
     quaternion_data = np.array(quaternion_data)
     
+    # Check if data has correct shape (should be 2D with 4 columns)
+    if len(quaternion_data.shape) != 2:
+        print(f"Warning: Quaternion data has wrong shape {quaternion_data.shape}, using zeros")
+        return np.zeros((100, 4))
+    
+    if quaternion_data.shape[1] != 4:
+        print(f"Warning: Quaternion data has wrong number of columns {quaternion_data.shape[1]}, using zeros")
+        return np.zeros((100, 4))
+    
     # Normalize quaternions to unit length
     norms = np.linalg.norm(quaternion_data, axis=1, keepdims=True)
     norms = np.where(norms < 1e-10, 1.0, norms)  # Avoid division by zero

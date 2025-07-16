@@ -18,8 +18,14 @@ def preprocess_emg(emg_data, fs=200, lowcut=20, highcut=90):
     if len(emg_data) == 0:
         print("Warning: No EMG data to preprocess")
         return emg_data
-    b, a = butter_bandpass(lowcut, highcut, fs)
-    filtered = filtfilt(b, a, emg_data, axis=0)
+    
+    # Check if data is too short for filtering (need at least 50 samples)
+    if len(emg_data) < 50:
+        print(f"Warning: EMG data too short ({len(emg_data)} samples), skipping filter")
+        filtered = emg_data
+    else:
+        b, a = butter_bandpass(lowcut, highcut, fs)
+        filtered = filtfilt(b, a, emg_data, axis=0)
     
     # Handle zero variance case to prevent NaN
     std_val = np.std(filtered)
@@ -29,6 +35,52 @@ def preprocess_emg(emg_data, fs=200, lowcut=20, highcut=90):
     else:
         normalized = (filtered - np.mean(filtered)) / std_val
         return normalized
+
+def normalize_data(data):
+    """Normalize data using z-score normalization."""
+    if data is None or len(data) == 0:
+        return data
+    
+    data = np.array(data)
+    mean_val = np.mean(data, axis=0)
+    std_val = np.std(data, axis=0)
+    
+    # Handle zero standard deviation
+    std_val = np.where(std_val < 1e-10, 1.0, std_val)
+    
+    normalized = (data - mean_val) / std_val
+    return normalized
+
+def filter_noise(data, cutoff_freq=50, fs=200):
+    """Apply low-pass filter to remove high-frequency noise."""
+    if data is None or len(data) == 0:
+        return data
+    
+    data = np.array(data)
+    
+    # Design low-pass filter
+    nyq = 0.5 * fs
+    low = cutoff_freq / nyq
+    b, a = butter(4, low, btype='low')
+    
+    # Apply filter
+    filtered = filtfilt(b, a, data, axis=0)
+    return filtered
+
+def segment_data(data, window_size=100, overlap=0.5):
+    """Segment data into overlapping windows."""
+    if data is None or len(data) == 0:
+        return []
+    
+    data = np.array(data)
+    segments = []
+    step_size = int(window_size * (1 - overlap))
+    
+    for i in range(0, len(data) - window_size + 1, step_size):
+        segment = data[i:i + window_size]
+        segments.append(segment)
+    
+    return segments
 
 def extract_emg_features(emg_window):
     """Extract RMS and MAV features from EMG window."""
