@@ -333,58 +333,80 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         
     def _setup_prediction_ui(self):
         # Control frame for prediction
-        pred_control_frame = ttk.Frame(self.pred_frame)
-        pred_control_frame.pack(fill='x', padx=10, pady=5)
+        control_frame = ttk.Frame(self.pred_frame)
+        control_frame.pack(fill='x', padx=10, pady=5)
         
-        # Model toggles
-        self.use_feature_classifier = tk.BooleanVar(value=False)
-        feature_toggle_btn = ttk.Checkbutton(pred_control_frame, text="Use Feature Model", variable=self.use_feature_classifier, onvalue=True, offvalue=False)
-        feature_toggle_btn.pack(side='left', padx=5)
+        # Model loading section
+        model_frame = ttk.LabelFrame(control_frame, text="Model", padding=5)
+        model_frame.pack(fill='x', pady=5)
         
-        # Position-only toggle
-        self.use_position_only = tk.BooleanVar(value=False)
-        position_toggle_btn = ttk.Checkbutton(pred_control_frame, text="Position-Only Model", variable=self.use_position_only, onvalue=True, offvalue=False)
-        position_toggle_btn.pack(side='left', padx=5)
+        ttk.Button(model_frame, text="Load Model", command=self.load_model).pack(side='left', padx=5)
+        self.model_status_var = tk.StringVar(value="No model loaded")
+        ttk.Label(model_frame, textvariable=self.model_status_var).pack(side='left', padx=10)
         
-        # Load model button
-        load_btn = ttk.Button(pred_control_frame, text="Load Model", command=self.load_model)
-        load_btn.pack(side='left', padx=5)
+        # Prediction control section
+        pred_control_frame = ttk.LabelFrame(control_frame, text="Prediction Control", padding=5)
+        pred_control_frame.pack(fill='x', pady=5)
         
-        # Clear model button
-        clear_model_btn = ttk.Button(pred_control_frame, text="Clear Model", command=self.clear_model)
-        clear_model_btn.pack(side='left', padx=5)
+        # Prediction recording button (new countdown-based approach)
+        self.pred_record_btn = ttk.Button(pred_control_frame, text="Start Prediction Recording", 
+                                        command=self._start_prediction_recording)
+        self.pred_record_btn.pack(side='left', padx=5)
         
-        # Start/Stop prediction button
-        self.pred_btn = ttk.Button(pred_control_frame, text="Start Prediction", command=self.toggle_prediction)
-        self.pred_btn.pack(side='left', padx=5)
+        # Prediction status
+        self.pred_status_var = tk.StringVar(value="Status: Ready")
+        ttk.Label(pred_control_frame, textvariable=self.pred_status_var).pack(side='left', padx=10)
         
-        # Sliding window checkbox
-        self.sliding_window_var = tk.BooleanVar(value=self.use_sliding_windows)
-        sliding_window_cb = ttk.Checkbutton(pred_control_frame, text="Sliding Windows", 
-                                          variable=self.sliding_window_var, 
-                                          command=self._toggle_sliding_windows)
-        sliding_window_cb.pack(side='left', padx=10)
-        
-        # Prediction result
-        self.pred_result_var = tk.StringVar(value="Prediction: None")
-        pred_result_label = ttk.Label(pred_control_frame, textvariable=self.pred_result_var, font=('Arial', 14, 'bold'))
-        pred_result_label.pack(side='left', padx=20)
-        
-        # Confidence
-        self.confidence_var = tk.StringVar(value="Confidence: 0%")
-        confidence_label = ttk.Label(pred_control_frame, textvariable=self.confidence_var, font=('Arial', 12))
-        confidence_label.pack(side='left', padx=10)
+        # Prediction countdown (similar to training)
+        self.pred_countdown_var = tk.StringVar()
+        ttk.Label(pred_control_frame, textvariable=self.pred_countdown_var, 
+                 font=('Arial', 16, 'bold')).pack(side='left', padx=10)
         
         # Prediction indicator
-        self.pred_indicator = tk.Label(pred_control_frame, text="⏹", font=('Arial', 16), fg='gray')
-        self.pred_indicator.pack(side='left', padx=10)
+        self.pred_indicator = tk.Label(pred_control_frame, text="⏹", fg='gray', font=('Arial', 20))
+        self.pred_indicator.pack(side='left', padx=5)
+        
+        # Prediction result
+        result_frame = ttk.LabelFrame(control_frame, text="Prediction Result", padding=5)
+        result_frame.pack(fill='x', pady=5)
+        
+        self.pred_result_var = tk.StringVar(value="No prediction yet")
+        ttk.Label(result_frame, textvariable=self.pred_result_var, 
+                 font=('Arial', 14, 'bold')).pack(pady=5)
+        
+        # Prediction settings
+        settings_frame = ttk.LabelFrame(control_frame, text="Settings", padding=5)
+        settings_frame.pack(fill='x', pady=5)
+        
+        # Sliding windows toggle
+        self.sliding_windows_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(settings_frame, text="Use Sliding Windows", 
+                       variable=self.sliding_windows_var, 
+                       command=self._toggle_sliding_windows).pack(side='left', padx=5)
+        
+        # Position-only toggle
+        self.position_only_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(settings_frame, text="Position Only (Quaternion)", 
+                       variable=self.position_only_var).pack(side='left', padx=5)
+        
+        # Feature classifier toggle
+        self.feature_classifier_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(settings_frame, text="Use Feature Classifier", 
+                       variable=self.feature_classifier_var).pack(side='left', padx=5)
         
         # Prediction log
-        pred_log_frame = ttk.Frame(self.pred_frame)
-        pred_log_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        log_frame = ttk.LabelFrame(self.pred_frame, text="Prediction Log", padding=5)
+        log_frame.pack(fill='both', expand=True, padx=10, pady=5)
         
-        self.pred_log_text = scrolledtext.ScrolledText(pred_log_frame, height=6)
+        self.pred_log_text = scrolledtext.ScrolledText(log_frame, height=10)
         self.pred_log_text.pack(fill='both', expand=True)
+        
+        # Prediction variables
+        self.predicting = False
+        self.pred_collecting = False
+        self.pred_collection_emg_buffer = []
+        self.pred_collection_quaternion_buffer = []
+        self.prediction_duration_ms = 2000  # 2 seconds like training
         
     def _setup_visualizer_ui(self):
         # Main frame with notebook for different views
@@ -500,30 +522,30 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         self.log("Disconnected from Myo")
         
     def on_emg(self, event):
-        now = time.time()
-        if now - self.last_emg_time < 0.01:  # 100Hz max
-            return
-        self.last_emg_time = now
-        
-        # Always store EMG for live display
+        """Handle EMG data"""
+        # Store in live display buffer
         self.emg_buffer.append(event.emg)
         
-        # Keep only last 200 samples for live display
+        # Keep only last 200 samples for display
         if len(self.emg_buffer) > 200:
             self.emg_buffer = self.emg_buffer[-200:]
-        
-        # Store for collection if collecting
+            
+        # Store in collection buffer if recording
         if self.collecting:
             self.collection_emg_buffer.append(event.emg)
             
-        # Store for prediction if predicting
+        # Store in prediction collection buffer if prediction recording
+        if self.pred_collecting:
+            self.pred_collection_emg_buffer.append(event.emg)
+            
+        # Store in prediction buffer if live prediction is active (legacy)
         if self.predicting:
             self.pred_emg_buffer.append(event.emg)
-            # Keep only last 2 seconds of data (400 samples at 200Hz)
-            if len(self.pred_emg_buffer) > 400:
-                self.pred_emg_buffer = self.pred_emg_buffer[-400:]
-            
+            if len(self.pred_emg_buffer) > self.prediction_window_size:
+                self.pred_emg_buffer = self.pred_emg_buffer[-self.prediction_window_size:]
+                
     def on_orientation(self, event):
+        """Handle orientation data"""
         # Remove throttling for quaternions - let them come at their natural rate
         # now = time.time()
         # if now - self.last_quaternion_time < 0.01:  # 100Hz max (was 0.05 = 20Hz)
@@ -534,25 +556,24 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
         quaternion = [event.orientation.x, event.orientation.y, event.orientation.z, event.orientation.w]
         self.quaternion_buffer.append(quaternion)
         
-        # Debug: log quaternion rate occasionally
-        if len(self.quaternion_buffer) % 50 == 0:  # Every 50th sample
-            self.log(f"Quaternion samples: {len(self.quaternion_buffer)}")
-        
-        # Keep only last 200 samples for live display
+        # Keep only last 200 samples for display
         if len(self.quaternion_buffer) > 200:
             self.quaternion_buffer = self.quaternion_buffer[-200:]
-        
-        # Store for collection if collecting
+            
+        # Store in collection buffer if recording
         if self.collecting:
             self.collection_quaternion_buffer.append(quaternion)
             
-        # Store for prediction if predicting
+        # Store in prediction collection buffer if prediction recording
+        if self.pred_collecting:
+            self.pred_collection_quaternion_buffer.append(quaternion)
+            
+        # Store in prediction buffer if live prediction is active (legacy)
         if self.predicting:
             self.pred_quaternion_buffer.append(quaternion)
-            # Keep only last 2 seconds of data (400 samples at 200Hz)
-            if len(self.pred_quaternion_buffer) > 400:
-                self.pred_quaternion_buffer = self.pred_quaternion_buffer[-400:]
-            
+            if len(self.pred_quaternion_buffer) > self.prediction_window_size:
+                self.pred_quaternion_buffer = self.pred_quaternion_buffer[-self.prediction_window_size:]
+        
     def _start_recording(self):
         """Start recording data for the selected class"""
         print("🔍 DEBUG: _start_recording called")
@@ -901,44 +922,52 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
     def load_model(self):
         """Load a trained model"""
         try:
-            model_filename = filedialog.askopenfilename(
+            # Ask for model file
+            model_path = filedialog.askopenfilename(
+                title="Load Model",
                 filetypes=[("H5 files", "*.h5"), ("All files", "*.*")]
             )
             
-            if model_filename:
-                # Load model
-                self.model = tf.keras.models.load_model(model_filename)
+            if not model_path:
+                return
                 
-                # Check model input shape
-                expected_shape = self.model.input_shape
-                self.pred_log(f"Model expects input shape: {expected_shape}")
-                
-                # Detect model type based on input shape
-                if expected_shape[2] == 4:  # Position-only model (quaternion only)
-                    self.use_position_only.set(True)
-                    self.pred_log("Detected position-only model - enabling position-only mode")
-                elif expected_shape[2] == 12:  # Full model (EMG + quaternion)
-                    self.use_position_only.set(False)
-                    self.pred_log("Detected full model - using EMG + quaternion mode")
-                else:
-                    self.pred_log(f"Warning: Unknown model input shape: {expected_shape}")
-                
-                # Load label encoder
-                le_filename = model_filename.replace('.h5', '_labels.pkl')
-                with open(le_filename, 'rb') as f:
-                    self.le = pickle.load(f)
-                    
-                self.pred_log(f"Model loaded from {model_filename}")
-                self.pred_log(f"Labels: {list(self.le.classes_)}")
-                
-                # Show model type in UI
-                model_type = "Position-Only" if self.use_position_only.get() else "Full (EMG+Quaternion)"
-                self.pred_log(f"Model type: {model_type}")
-                
-        except Exception as e:
-            self.pred_log(f"Load error: {e}")
-            messagebox.showerror("Error", f"Failed to load model: {e}")
+            # Load model
+            self.model = tf.keras.models.load_model(model_path)
             
+            # Load label encoder
+            le_path = model_path.replace('.h5', '_labels.pkl')
+            if os.path.exists(le_path):
+                with open(le_path, 'rb') as f:
+                    self.le = pickle.load(f)
+            else:
+                # Try to find any label file in the same directory
+                import glob
+                label_files = glob.glob(os.path.join(os.path.dirname(model_path), '*_labels.pkl'))
+                if label_files:
+                    with open(label_files[0], 'rb') as f:
+                        self.le = pickle.load(f)
+                else:
+                    # Create default label encoder
+                    from sklearn.preprocessing import LabelEncoder
+                    self.le = LabelEncoder()
+                    self.le.fit(['A', 'B', 'C', 'IDLE', 'NOISE'])
+            
+            # Update status
+            model_name = os.path.basename(model_path)
+            self.model_status_var.set(f"Model: {model_name}")
+            self.log(f"✅ Model loaded: {model_name}")
+            self.log(f"   Classes: {list(self.le.classes_)}")
+            self.log(f"   Input shape: {self.model.input_shape}")
+            self.log(f"   Output shape: {self.model.output_shape}")
+            
+        except Exception as e:
+            error_msg = f"Error loading model: {e}"
+            self.log(error_msg)
+            messagebox.showerror("Error", error_msg)
+            self.model = None
+            self.le = None
+            self.model_status_var.set("No model loaded")
+
     def toggle_prediction(self):
         """Toggle prediction mode on/off"""
         if not hasattr(self, 'model') or self.model is None:
@@ -1046,7 +1075,8 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                     else:
                         # Use deep model (EMG + quaternion)
                         emg_proc = preprocess_emg(emg_win)
-                        X_win = np.concatenate([emg_proc, quaternion_win], axis=1)  # shape (window_size, 12)
+                        # Use the same preprocessing as training
+                        X_win = create_position_focused_sequence(emg_proc, quaternion_win, position_emphasis=0.8)
                         pred = self.model.predict(X_win[np.newaxis, ...], verbose=0)
                         text = self.le.inverse_transform([np.argmax(pred)])[0]
                         confidence = np.max(pred)
@@ -1104,9 +1134,10 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 tb = traceback.format_exc()
                 error_msg = f"Prediction error: {e}"
                 self.pred_result_var.set("Prediction error!")
+                self.pred_status_var.set("Status: Error")
+                self.pred_log(error_msg)
                 print(error_msg)
                 print(tb)
-                self.pred_log(error_msg)
                 
                 # Clear prediction indicator
                 self.pred_indicator.config(text="⏹", fg='gray')
@@ -1391,24 +1422,18 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
                 self.log(f"  {label}: No samples collected")
 
     def _toggle_sliding_windows(self):
-        """Toggle sliding windows option"""
-        self.use_sliding_windows = self.sliding_window_var.get()
-        self.log(f"Sliding windows: {'Enabled' if self.use_sliding_windows else 'Disabled'}")
-
+        """Toggle sliding windows mode"""
+        self.use_sliding_windows = self.sliding_windows_var.get()
+        mode = "enabled" if self.use_sliding_windows else "disabled"
+        self.pred_log(f"Sliding windows {mode}")
+        
     def play_beep(self, frequency, duration_ms):
         # Use winsound instead of sounddevice for more reliable beeps
-        print(f"🔊 DEBUG: play_beep called with freq={frequency}Hz, duration={duration_ms}ms")
         try:
             winsound.Beep(int(frequency), int(duration_ms))
-            print("✅ DEBUG: winsound.Beep completed")
         except Exception as e:
-            print(f"❌ DEBUG: winsound.Beep failed: {e}")
-            # Fallback to sounddevice
-            try:
-                play_sine_wave_beep(frequency, duration_ms, volume=0.8)
-                print("✅ DEBUG: sounddevice fallback completed")
-            except Exception as e2:
-                print(f"❌ DEBUG: sounddevice fallback also failed: {e2}")
+            print(f"Beep error: {e}")
+            pass
 
     def _plot_visualizer_sample(self):
         cls = self.vis_class_var.get()
@@ -1573,6 +1598,167 @@ class SimpleMyoGUI(tk.Tk, myo.DeviceListener):
             model.add(layers.Dense(64, activation='relu'))
         model.add(layers.Dense(num_classes, activation='softmax'))
         return model
+
+    def _start_prediction_recording(self):
+        """Start prediction recording with countdown"""
+        if not hasattr(self, 'model') or self.model is None:
+            messagebox.showerror("Error", "No model loaded!")
+            return
+            
+        if self.pred_collecting:
+            return
+            
+        # Clear previous prediction
+        self.pred_result_var.set("Preparing to record...")
+        self.pred_status_var.set("Status: Starting recording...")
+        
+        # Clear collection buffers
+        self.pred_collection_emg_buffer = []
+        self.pred_collection_quaternion_buffer = []
+        
+        # Start countdown
+        self._prediction_countdown(3)
+        
+    def _prediction_countdown(self, seconds):
+        """Countdown timer for prediction recording"""
+        if seconds > 0 and not self.pred_collecting:
+            self.pred_countdown_var.set(f"{seconds}s")
+            self.after(1000, lambda: self._prediction_countdown(seconds - 1))
+        elif not self.pred_collecting:
+            self._begin_prediction_recording()
+            
+    def _begin_prediction_recording(self):
+        """Begin prediction recording"""
+        self.pred_collecting = True
+        self.pred_record_btn.config(state='disabled')
+        self.pred_status_var.set("Status: Recording...")
+        self.pred_indicator.config(text="⏺", fg='red')
+        self.pred_countdown_var.set("Recording...")
+        
+        # Visual feedback: flash background
+        self.axs[0].set_facecolor('#ffcccc')  # Light red background
+        self.axs[1].set_facecolor('#ffcccc')
+        self.canvas.draw_idle()
+        
+        # Play start beep
+        threading.Thread(target=self._play_start_beep, daemon=True).start()
+        
+        # Start recording timer
+        self.after(self.prediction_duration_ms, self._finish_prediction_recording)
+        
+    def _finish_prediction_recording(self):
+        """Finish prediction recording and make prediction"""
+        if not self.pred_collecting:
+            return
+            
+        self.pred_collecting = False
+        
+        # Hide recording indicator and countdown
+        self.pred_indicator.config(text="⏹", fg='gray')
+        self.pred_countdown_var.set("")
+        self.pred_record_btn.config(state='normal')
+        
+        # Restore plot background
+        self.axs[0].set_facecolor('#ffffff')  # White background
+        self.axs[1].set_facecolor('#ffffff')
+        self.canvas.draw_idle()
+        
+        # Play stop beep
+        threading.Thread(target=self._play_stop_beep, daemon=True).start()
+        
+        # Make prediction on recorded data
+        self._make_prediction_from_recording()
+        
+    def _make_prediction_from_recording(self):
+        """Make prediction using the recorded data"""
+        if len(self.pred_collection_emg_buffer) == 0 or len(self.pred_collection_quaternion_buffer) == 0:
+            self.pred_result_var.set("No data recorded!")
+            self.pred_status_var.set("Status: Recording failed")
+            return
+            
+        # Standardize data length (same as training)
+        target_length = 100
+        min_len = min(len(self.pred_collection_emg_buffer), len(self.pred_collection_quaternion_buffer))
+        
+        # Truncate both to the same length, then to target length
+        emg_data = np.array(self.pred_collection_emg_buffer[:min_len])
+        quaternion_data = np.array(self.pred_collection_quaternion_buffer[:min_len])
+        
+        # If we have more than target_length, take the middle portion
+        if min_len > target_length:
+            start_idx = (min_len - target_length) // 2
+            emg_data = emg_data[start_idx:start_idx + target_length]
+            quaternion_data = quaternion_data[start_idx:start_idx + target_length]
+        elif min_len < target_length:
+            # Pad with zeros if too short
+            emg_pad = np.zeros((target_length - min_len, 8))
+            quaternion_pad = np.zeros((target_length - min_len, 4))
+            emg_data = np.vstack([emg_data, emg_pad])
+            quaternion_data = np.vstack([quaternion_data, quaternion_pad])
+        
+        # Make prediction
+        try:
+            if self.feature_classifier_var.get():
+                if hasattr(self, 'feature_classifier') and self.feature_classifier is not None:
+                    # Use feature-based classifier
+                    features = self.extract_features(emg_data, quaternion_data).reshape(1, -1)
+                    pred = self.feature_classifier.predict(features)[0]
+                    self.pred_result_var.set(f"Feature Model: {pred}")
+                    self.pred_status_var.set("Status: Prediction complete")
+                else:
+                    self.pred_result_var.set("No feature model trained")
+                    self.pred_status_var.set("Status: No feature model")
+            else:
+                if self.position_only_var.get():
+                    # Use position-only model (quaternion only)
+                    from src.position_only_model import predict_position_only
+                    try:
+                        text, confidence, probabilities = predict_position_only(quaternion_data, self.model, self.le)
+                        self.pred_result_var.set(f"Position-Only: {text} ({confidence:.1%})")
+                        self.pred_status_var.set("Status: Prediction complete")
+                        
+                        # Log prediction details
+                        current_time = time.strftime("%H:%M:%S")
+                        self.pred_log(f"[{current_time}] Position-Only Prediction: {text} (confidence: {confidence:.3f})")
+                        self.pred_log(f"  Probabilities: {dict(zip(self.le.classes_, probabilities))}")
+                        
+                    except Exception as e:
+                        self.pred_log(f"Position-only prediction error: {e}")
+                        self.pred_result_var.set("Prediction error!")
+                        self.pred_status_var.set("Status: Error")
+                        return
+                else:
+                    # Automatically select input type based on model input shape
+                    input_shape = self.model.input_shape
+                    if input_shape[-1] == 4:
+                        # Model expects quaternion only
+                        X_win = quaternion_data.astype(np.float32)
+                    elif input_shape[-1] == 12:
+                        # Model expects EMG + quaternion
+                        emg_proc = preprocess_emg(emg_data)
+                        X_win = create_position_focused_sequence(emg_proc, quaternion_data, position_emphasis=0.8)
+                    else:
+                        raise ValueError(f"Unsupported model input shape: {input_shape}")
+                    pred = self.model.predict(X_win[np.newaxis, ...], verbose=0)
+                    text = self.le.inverse_transform([np.argmax(pred)])[0]
+                    confidence = np.max(pred)
+                    
+                    self.pred_result_var.set(f"Deep Model: {text} ({confidence:.1%})")
+                    self.pred_status_var.set("Status: Prediction complete")
+                    
+                    # Log prediction details
+                    current_time = time.strftime("%H:%M:%S")
+                    self.pred_log(f"[{current_time}] Deep Model Prediction: {text} (confidence: {confidence:.3f})")
+                    self.pred_log(f"  All probabilities: {dict(zip(self.le.classes_, pred[0]))}")
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            error_msg = f"Prediction error: {e}"
+            self.pred_result_var.set("Prediction error!")
+            self.pred_status_var.set("Status: Error")
+            self.pred_log(error_msg)
+            print(error_msg)
+            print(tb)
 
 if __name__ == "__main__":
     print("🚀 Starting Simplified Myo Handwriting Recognition GUI")
